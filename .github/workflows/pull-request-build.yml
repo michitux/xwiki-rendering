@@ -13,4 +13,4 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Maven build
-        run: LANG=C.UTF-8 MAVEN_OPTS='-Xmx2048m -Xms512m' mvn clean install -Plegacy,quality,standalone
+        run: LANG=C.UTF-8 MAVEN_OPTS='-Xmx2048m -Xms512m' mvn clean install -Plegacy,quality,standalone --no-transfer-progress javadoc:javadoc -Ddoclint=all -Ddevelocity.cache.remote.storeEnabled=false
