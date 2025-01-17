@@ -21,4 +21,4 @@ jobs:
             ${{ runner.os }}-maven-
 
       - name: Run Maven build
-        run: LANG=C.UTF-8 MAVEN_OPTS='-Xmx2048m -Xms512m' mvn clean install -Plegacy,quality,standalone -U --no-transfer-progress javadoc:javadoc -Ddoclint=all -Ddevelocity.cache.remote.storeEnabled=false
+        run: LANG=C.UTF-8 MAVEN_OPTS='-Xmx2048m -Xms512m' mvn clean verify -Plegacy,quality,standalone -U --no-transfer-progress javadoc:javadoc -Ddoclint=all -Ddevelocity.cache.remote.storeEnabled=false
