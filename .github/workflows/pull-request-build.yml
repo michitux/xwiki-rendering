@@ -1,0 +1,16 @@
+name: Maven Build
+
+on:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: xwiki/build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Maven build
+        run: LANG=C.UTF-8 MAVEN_OPTS='-Xmx2048m -Xms512m' mvn clean install -Plegacy,quality,standalone
