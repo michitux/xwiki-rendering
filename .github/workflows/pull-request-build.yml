@@ -12,13 +12,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Cache local Maven repository
-        uses: actions/cache@v4
-        with:
-          path: /root/.m2/repository
-          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
-          restore-keys: |
-            ${{ runner.os }}-maven-
+# Caching doesn't work unless we also enable the action on the master branch, see https://github.com/orgs/community/discussions/27059
+#      - name: Cache local Maven repository
+#        uses: actions/cache@v4
+#        with:
+#          path: /root/.m2/repository
+#          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+#          restore-keys: |
+#            ${{ runner.os }}-maven-
 
       - name: Run Maven build
         run: LANG=C.UTF-8 MAVEN_OPTS='-Xmx2048m -Xms512m' mvn clean verify -Plegacy,quality,standalone -U --no-transfer-progress -Ddevelocity.cache.remote.storeEnabled=false javadoc:javadoc -Ddoclint=all
