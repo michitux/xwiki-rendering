@@ -48,6 +48,14 @@ public final class RenderingLimitType
         new RenderingLimitType("macro.executions", 100_000, 100, "1");
 
     /**
+     * The number of asynchronous executions that one rendering may spawn, to bound both the load they put on the
+     * server and the number of requests the client needs to fetch their results. Any further asynchronous execution is
+     * executed synchronously instead so that the page is still rendered.
+     */
+    public static final RenderingLimitType ASYNC_EXECUTIONS =
+        new RenderingLimitType("async.executions", 100, 0, "1");
+
+    /**
      * The size of the content that the macros of one rendering may produce, counted as a rough estimate that also
      * counts content several times when it passes through several macros, so the limit is set generously.
      */
