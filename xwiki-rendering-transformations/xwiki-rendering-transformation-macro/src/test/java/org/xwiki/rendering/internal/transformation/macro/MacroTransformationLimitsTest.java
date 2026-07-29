@@ -54,8 +54,10 @@ import org.xwiki.test.mockito.MockitoComponentManager;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 /**
@@ -111,7 +113,7 @@ class MacroTransformationLimitsTest
     @Test
     void macroExecutionsLimitStopsAMacroThatGeneratesItself() throws Exception
     {
-        when(this.limitsConfiguration.getConfiguredLimit(RenderingLimitType.MACRO_EXECUTIONS))
+        when(this.limitsConfiguration.getConfiguredLimit(eq(RenderingLimitType.MACRO_EXECUTIONS), any()))
             .thenReturn(OptionalLong.of(3));
 
         XDOM dom = new XDOM(List.of((Block) new MacroBlock(RECURSIVE_MACRO, Map.of(), false)));
@@ -130,7 +132,7 @@ class MacroTransformationLimitsTest
     @Test
     void documentSizeLimitDropsWhatTheMacroProduced() throws Exception
     {
-        when(this.limitsConfiguration.getConfiguredLimit(RenderingLimitType.DOCUMENT_SIZE))
+        when(this.limitsConfiguration.getConfiguredLimit(eq(RenderingLimitType.DOCUMENT_SIZE), any()))
             .thenReturn(OptionalLong.of(1));
 
         XDOM dom = new XDOM(List.of((Block) new MacroBlock("testsimplemacro", Map.of(), false)));

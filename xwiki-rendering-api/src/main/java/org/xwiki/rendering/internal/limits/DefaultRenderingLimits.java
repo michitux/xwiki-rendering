@@ -20,6 +20,7 @@
 package org.xwiki.rendering.internal.limits;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -38,6 +39,7 @@ import org.xwiki.rendering.limits.RecursionLimitExceededException;
 import org.xwiki.rendering.limits.RecursionType;
 import org.xwiki.rendering.limits.RenderingLimitType;
 import org.xwiki.rendering.limits.RenderingLimits;
+import org.xwiki.rendering.limits.RenderingLimitsProfileResolver;
 import org.xwiki.rendering.limits.RenderingLimitsScope;
 import org.xwiki.rendering.limits.RenderingLimitsSnapshot;
 import org.xwiki.rendering.transformation.RenderingContext;
@@ -79,6 +81,12 @@ public class DefaultRenderingLimits implements RenderingLimits
      */
     private static final class Budgets
     {
+        /**
+         * The configuration profiles that apply, resolved once here so that they cannot change in the middle of a
+         * rendering and so that they are shared with the executions this rendering spawns in other threads.
+         */
+        private final List<String> profiles;
+
         private final Map<String, AtomicLong> charged = new ConcurrentHashMap<>();
 
         /**
@@ -86,6 +94,11 @@ public class DefaultRenderingLimits implements RenderingLimits
          * for every further charge against it.
          */
         private final Set<String> reportedLimits = ConcurrentHashMap.newKeySet();
+
+        Budgets(List<String> profiles)
+        {
+            this.profiles = profiles;
+        }
 
         /**
          * @return the total amount charged against the given limit, including this charge
@@ -233,6 +246,9 @@ public class DefaultRenderingLimits implements RenderingLimits
     @Inject
     private RenderingLimitsConfiguration configuration;
 
+    @Inject
+    private RenderingLimitsProfileResolver profileResolver;
+
     /**
      * Used to report which page exceeded a limit. A provider as the default implementation of the rendering context
      * uses the limits itself.
@@ -337,7 +353,7 @@ public class DefaultRenderingLimits implements RenderingLimits
         }
 
         State state = getState(false);
-        RenderingLimitsMode mode = this.configuration.getMode();
+        RenderingLimitsMode mode = getMode(state);
 
         // In the logging mode the budgets are only observed, never enforced.
         if (mode == RenderingLimitsMode.DISABLED || mode == RenderingLimitsMode.LOG) {
@@ -391,7 +407,7 @@ public class DefaultRenderingLimits implements RenderingLimits
             // Nothing is reset when the budgets have been propagated as this execution is then part of the rendering
             // that propagated them.
             if (state != null && !state.budgetsPropagated) {
-                state.budgets = new Budgets();
+                state.budgets = newBudgets();
                 state.startNanos = System.nanoTime();
                 state.chargedTimes.clear();
             }
@@ -438,9 +454,10 @@ public class DefaultRenderingLimits implements RenderingLimits
     {
         if (state.budgets.shallReportExceeded(type.getName())) {
             this.logger.warn("The [{}] limit for rendering a page has been exceeded while rendering [{}]: [{}]"
-                + " instead of the limit of [{}]. A wiki administrator can change the limit with the"
+                + " instead of the limit of [{}] (profiles: {}). A wiki administrator can change the limit with the"
                 + " [rendering.limits.{}.limit] property in xwiki.properties.", type.getName(),
-                this.renderingContextProvider.get().getTransformationId(), charged, limit, type.getName());
+                this.renderingContextProvider.get().getTransformationId(), charged, limit, state.budgets.profiles,
+                type.getName());
         }
     }
 
@@ -471,13 +488,15 @@ public class DefaultRenderingLimits implements RenderingLimits
             return null;
         }
 
-        // Resolve the mode before creating the state so that in the disabled mode no budgets are allocated and no final
-        // property is declared in the execution context.
-        if (this.configuration.getMode() == RenderingLimitsMode.DISABLED) {
+        State state = getState(false);
+
+        // Resolve the mode before creating the state so that in the disabled mode no budgets are allocated, no profile
+        // is resolved and no final property is declared in the execution context.
+        if (getMode(state) == RenderingLimitsMode.DISABLED) {
             return null;
         }
 
-        return getState(true);
+        return state == null ? getState(true) : state;
     }
 
     private State getState(boolean create)
@@ -493,9 +512,9 @@ public class DefaultRenderingLimits implements RenderingLimits
         State state = (State) econtext.getProperty(ECONTEXT_KEY);
 
         // Only create the state when something is actually counted so that reads stay side-effect-free and don't
-        // allocate budgets that would then be locked in as a final context property.
+        // resolve profiles or allocate budgets that would then be locked in as a final context property.
         if (state == null && create) {
-            state = new State(new Budgets());
+            state = new State(newBudgets());
             // Declare the property as inherited so it survives cloning the execution context, and as final so it
             // cannot be replaced by a fresh one to get new limits.
             econtext.newProperty(ECONTEXT_KEY).inherited().initial(state).makeFinal().declare();
@@ -520,8 +539,27 @@ public class DefaultRenderingLimits implements RenderingLimits
      */
     private long getLimit(RenderingLimitType type, State state)
     {
-        long limit = this.configuration.getConfiguredLimit(type).orElseGet(type::getDefaultLimit);
+        long limit = this.configuration.getConfiguredLimit(type, getProfiles(state)).orElseGet(type::getDefaultLimit);
 
         return limit + (state != null && state.reserve > 0 ? type.getReserve() : 0);
+    }
+
+    private Budgets newBudgets()
+    {
+        return new Budgets(this.profileResolver.getCurrentProfiles());
+    }
+
+    /**
+     * @param state the state to get the profiles from, may be {@code null} when nothing has been counted yet
+     * @return the profiles of the current rendering, resolved on the fly when it has no budgets yet
+     */
+    private List<String> getProfiles(State state)
+    {
+        return state == null ? this.profileResolver.getCurrentProfiles() : state.budgets.profiles;
+    }
+
+    private RenderingLimitsMode getMode(State state)
+    {
+        return this.configuration.getMode(getProfiles(state));
     }
 }

@@ -30,6 +30,7 @@ import org.xwiki.context.Execution;
 import org.xwiki.context.ExecutionContext;
 import org.xwiki.rendering.block.Block;
 import org.xwiki.rendering.internal.limits.DefaultRenderingLimits;
+import org.xwiki.rendering.internal.limits.DefaultRenderingLimitsProfileResolver;
 import org.xwiki.rendering.internal.limits.RenderingLimitsConfiguration;
 import org.xwiki.rendering.limits.RecursionType;
 import org.xwiki.rendering.limits.RenderingLimits;
@@ -60,7 +61,7 @@ import static org.mockito.Mockito.when;
  * @version $Id$
  */
 @ComponentTest
-@ComponentList(DefaultRenderingLimits.class)
+@ComponentList({ DefaultRenderingLimits.class, DefaultRenderingLimitsProfileResolver.class })
 class DefaultRenderingContextTest
 {
     /**

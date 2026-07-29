@@ -19,6 +19,7 @@
  */
 package org.xwiki.rendering.internal.limits;
 
+import java.util.List;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
 
@@ -59,6 +60,8 @@ class RenderingLimitsConfigurationTest
     private static final String LIMIT_PROPERTY = "rendering.limits.test.limit";
 
     private static final String MODE_PROPERTY = "rendering.limits.mode";
+
+    private static final List<String> PROFILES = List.of("export.pdf", "job");
 
     @RegisterExtension
     private LogCaptureExtension logCapture = new LogCaptureExtension(LogLevel.WARN);
@@ -111,10 +114,10 @@ class RenderingLimitsConfigurationTest
     {
         when(this.configurationSource.getProperty(LIMIT_PROPERTY, Long.class, null)).thenReturn(4200L);
 
-        assertEquals(OptionalLong.of(4200), this.configuration.getConfiguredLimit(LIMIT_TYPE));
+        assertEquals(OptionalLong.of(4200), this.configuration.getConfiguredLimit(LIMIT_TYPE, List.of()));
 
         // Verify that the value is cached.
-        assertEquals(OptionalLong.of(4200), this.configuration.getConfiguredLimit(LIMIT_TYPE));
+        assertEquals(OptionalLong.of(4200), this.configuration.getConfiguredLimit(LIMIT_TYPE, List.of()));
         verify(this.configurationSource).getProperty(LIMIT_PROPERTY, Long.class, null);
         verifyNoMoreInteractions(this.configurationSource);
     }
@@ -122,10 +125,10 @@ class RenderingLimitsConfigurationTest
     @Test
     void getConfiguredLimitWithoutConfiguration()
     {
-        assertEquals(OptionalLong.empty(), this.configuration.getConfiguredLimit(LIMIT_TYPE));
+        assertEquals(OptionalLong.empty(), this.configuration.getConfiguredLimit(LIMIT_TYPE, List.of()));
 
         // Verify that the absence of a value is cached, too.
-        assertEquals(OptionalLong.empty(), this.configuration.getConfiguredLimit(LIMIT_TYPE));
+        assertEquals(OptionalLong.empty(), this.configuration.getConfiguredLimit(LIMIT_TYPE, List.of()));
         verify(this.configurationSource).getProperty(LIMIT_PROPERTY, Long.class, null);
         verifyNoMoreInteractions(this.configurationSource);
     }
@@ -136,9 +139,9 @@ class RenderingLimitsConfigurationTest
         when(this.configurationSource.getProperty(LIMIT_PROPERTY, Long.class, null)).thenReturn(4200L);
         when(this.configurationSource.getProperty("rendering.limits.other.limit", Long.class, null)).thenReturn(7L);
 
-        assertEquals(OptionalLong.of(4200), this.configuration.getConfiguredLimit(LIMIT_TYPE));
+        assertEquals(OptionalLong.of(4200), this.configuration.getConfiguredLimit(LIMIT_TYPE, List.of()));
         assertEquals(OptionalLong.of(7),
-            this.configuration.getConfiguredLimit(new RenderingLimitType("other", 100, 10, "1")));
+            this.configuration.getConfiguredLimit(new RenderingLimitType("other", 100, 10, "1"), List.of()));
     }
 
     @ParameterizedTest
@@ -147,10 +150,10 @@ class RenderingLimitsConfigurationTest
     {
         when(this.configurationSource.getProperty(MODE_PROPERTY, String.class, null)).thenReturn(value);
 
-        assertEquals(expectedMode, this.configuration.getMode());
+        assertEquals(expectedMode, this.configuration.getMode(List.of()));
 
         // Verify that the value is cached.
-        assertEquals(expectedMode, this.configuration.getMode());
+        assertEquals(expectedMode, this.configuration.getMode(List.of()));
         verify(this.configurationSource).getProperty(MODE_PROPERTY, String.class, null);
         verifyNoMoreInteractions(this.configurationSource);
     }
@@ -158,7 +161,7 @@ class RenderingLimitsConfigurationTest
     @Test
     void getModeWithoutConfiguration()
     {
-        assertEquals(RenderingLimitsMode.ENFORCE, this.configuration.getMode());
+        assertEquals(RenderingLimitsMode.ENFORCE, this.configuration.getMode(List.of()));
     }
 
     @Test
@@ -166,8 +169,42 @@ class RenderingLimitsConfigurationTest
     {
         when(this.configurationSource.getProperty(MODE_PROPERTY, String.class, null)).thenReturn("wrong");
 
-        assertEquals(RenderingLimitsMode.ENFORCE, this.configuration.getMode());
+        assertEquals(RenderingLimitsMode.ENFORCE, this.configuration.getMode(List.of()));
         assertEquals("Ignoring the unknown rendering limits mode [wrong], using [ENFORCE] instead. Supported modes"
             + " are [ENFORCE, LOG, DISABLED].", this.logCapture.getMessage(0));
+    }
+
+    @Test
+    void getConfiguredLimitFromTheMostSpecificProfile()
+    {
+        when(this.configurationSource.getProperty(LIMIT_PROPERTY, Long.class, null)).thenReturn(1L);
+        when(this.configurationSource.getProperty("rendering.limits.profile.job.test.limit", Long.class, null))
+            .thenReturn(2L);
+        when(this.configurationSource.getProperty("rendering.limits.profile.export.pdf.test.limit", Long.class, null))
+            .thenReturn(3L);
+
+        assertEquals(OptionalLong.of(3), this.configuration.getConfiguredLimit(LIMIT_TYPE, PROFILES));
+        assertEquals(OptionalLong.of(2), this.configuration.getConfiguredLimit(LIMIT_TYPE, List.of("job")));
+        assertEquals(OptionalLong.of(1), this.configuration.getConfiguredLimit(LIMIT_TYPE, List.of()));
+    }
+
+    @Test
+    void getConfiguredLimitFallsBackToTheLessSpecificProfiles()
+    {
+        when(this.configurationSource.getProperty("rendering.limits.profile.job.test.limit", Long.class, null))
+            .thenReturn(2L);
+
+        assertEquals(OptionalLong.of(2), this.configuration.getConfiguredLimit(LIMIT_TYPE, PROFILES));
+    }
+
+    @Test
+    void getModeFromTheMostSpecificProfile()
+    {
+        when(this.configurationSource.getProperty(MODE_PROPERTY, String.class, null)).thenReturn("disabled");
+        when(this.configurationSource.getProperty("rendering.limits.profile.export.pdf.mode", String.class, null))
+            .thenReturn("log");
+
+        assertEquals(RenderingLimitsMode.LOG, this.configuration.getMode(PROFILES));
+        assertEquals(RenderingLimitsMode.DISABLED, this.configuration.getMode(List.of()));
     }
 }

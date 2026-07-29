@@ -33,6 +33,7 @@ import org.xwiki.context.ExecutionContext;
 import org.xwiki.rendering.limits.RecursionLimitExceededException;
 import org.xwiki.rendering.limits.RecursionType;
 import org.xwiki.rendering.limits.RenderingLimitType;
+import org.xwiki.rendering.limits.RenderingLimitsProfileResolver;
 import org.xwiki.rendering.limits.RenderingLimitsScope;
 import org.xwiki.rendering.limits.RenderingLimitsSnapshot;
 import org.xwiki.rendering.transformation.RenderingContext;
@@ -84,6 +85,9 @@ class DefaultRenderingLimitsTest
     private RenderingLimitsConfiguration configuration;
 
     @MockComponent
+    private RenderingLimitsProfileResolver profileResolver;
+
+    @MockComponent
     private RenderingContext renderingContext;
 
     private ExecutionContext executionContext = new ExecutionContext();
@@ -92,7 +96,8 @@ class DefaultRenderingLimitsTest
     void setUp()
     {
         when(this.execution.getContext()).thenAnswer(invocation -> this.executionContext);
-        when(this.configuration.getMode()).thenReturn(RenderingLimitsMode.ENFORCE);
+        when(this.profileResolver.getCurrentProfiles()).thenReturn(List.of());
+        when(this.configuration.getMode(List.of())).thenReturn(RenderingLimitsMode.ENFORCE);
     }
 
     @AfterEach
@@ -260,7 +265,7 @@ class DefaultRenderingLimitsTest
     @Test
     void configuredLimitOverridesTheDefault()
     {
-        when(this.configuration.getConfiguredLimit(LIMIT_TYPE)).thenReturn(OptionalLong.of(10));
+        when(this.configuration.getConfiguredLimit(LIMIT_TYPE, List.of())).thenReturn(OptionalLong.of(10));
 
         this.limits.charge(LIMIT_TYPE, 10);
         assertFalse(this.limits.isExceeded(LIMIT_TYPE));
@@ -398,9 +403,66 @@ class DefaultRenderingLimitsTest
     }
 
     @Test
+    void profilesAreResolvedOnceForTheWholeRendering()
+    {
+        List<String> profiles = List.of("export.pdf", "job");
+        when(this.profileResolver.getCurrentProfiles()).thenReturn(profiles);
+        when(this.configuration.getMode(profiles)).thenReturn(RenderingLimitsMode.ENFORCE);
+        when(this.configuration.getConfiguredLimit(LIMIT_TYPE, profiles)).thenReturn(OptionalLong.of(10));
+
+        this.limits.charge(LIMIT_TYPE, 10);
+        assertFalse(this.limits.isExceeded(LIMIT_TYPE));
+
+        // Even when the resolver would answer differently now, the profiles of the ongoing rendering still apply.
+        when(this.profileResolver.getCurrentProfiles()).thenReturn(List.of());
+
+        this.limits.charge(LIMIT_TYPE, 1);
+        assertTrue(this.limits.isExceeded(LIMIT_TYPE));
+    }
+
+    @Test
+    void anOutermostTransformationResolvesTheProfilesAgain() throws Exception
+    {
+        this.limits.charge(LIMIT_TYPE, 1);
+
+        List<String> profiles = List.of("export.pdf", "job");
+        when(this.profileResolver.getCurrentProfiles()).thenReturn(profiles);
+        when(this.configuration.getMode(profiles)).thenReturn(RenderingLimitsMode.ENFORCE);
+        when(this.configuration.getConfiguredLimit(LIMIT_TYPE, profiles)).thenReturn(OptionalLong.of(10));
+
+        try (RenderingLimitsScope transformation = this.limits.enterTransformation()) {
+            this.limits.charge(LIMIT_TYPE, 10);
+            assertFalse(this.limits.isExceeded(LIMIT_TYPE));
+
+            this.limits.charge(LIMIT_TYPE, 1);
+            assertTrue(this.limits.isExceeded(LIMIT_TYPE));
+        }
+    }
+
+    @Test
+    void restoredBudgetsKeepTheirProfiles()
+    {
+        List<String> profiles = List.of("export.pdf", "job");
+        when(this.profileResolver.getCurrentProfiles()).thenReturn(profiles);
+        when(this.configuration.getMode(profiles)).thenReturn(RenderingLimitsMode.ENFORCE);
+        when(this.configuration.getConfiguredLimit(LIMIT_TYPE, profiles)).thenReturn(OptionalLong.of(10));
+
+        this.limits.charge(LIMIT_TYPE, 10);
+        RenderingLimitsSnapshot snapshot = this.limits.save();
+
+        // Simulate the asynchronous rendering, which runs as a job of its own type but must not get fresh budgets.
+        this.executionContext = new ExecutionContext();
+        when(this.profileResolver.getCurrentProfiles()).thenReturn(List.of("asyncrenderer", "job"));
+        this.limits.restore(snapshot);
+
+        this.limits.charge(LIMIT_TYPE, 1);
+        assertTrue(this.limits.isExceeded(LIMIT_TYPE));
+    }
+
+    @Test
     void logModeCountsWithoutEnforcing()
     {
-        when(this.configuration.getMode()).thenReturn(RenderingLimitsMode.LOG);
+        when(this.configuration.getMode(List.of())).thenReturn(RenderingLimitsMode.LOG);
 
         this.limits.charge(LIMIT_TYPE, 1000);
 
@@ -412,7 +474,7 @@ class DefaultRenderingLimitsTest
     @Test
     void disabledModeDoesNotCount()
     {
-        when(this.configuration.getMode()).thenReturn(RenderingLimitsMode.DISABLED);
+        when(this.configuration.getMode(List.of())).thenReturn(RenderingLimitsMode.DISABLED);
 
         this.limits.charge(LIMIT_TYPE, 1000);
         this.limits.chargeElapsedTime(TIME_TYPE);
@@ -569,7 +631,7 @@ class DefaultRenderingLimitsTest
     @Test
     void elapsedTimeLimitIsEnforced() throws Exception
     {
-        when(this.configuration.getConfiguredLimit(TIME_TYPE)).thenReturn(OptionalLong.of(1));
+        when(this.configuration.getConfiguredLimit(TIME_TYPE, List.of())).thenReturn(OptionalLong.of(1));
 
         this.limits.chargeElapsedTime(TIME_TYPE);
         assertFalse(this.limits.isExceeded(TIME_TYPE));
@@ -585,7 +647,7 @@ class DefaultRenderingLimitsTest
     {
         assertEquals(100, this.limits.getLimit(LIMIT_TYPE));
 
-        when(this.configuration.getConfiguredLimit(LIMIT_TYPE)).thenReturn(OptionalLong.of(10));
+        when(this.configuration.getConfiguredLimit(LIMIT_TYPE, List.of())).thenReturn(OptionalLong.of(10));
 
         assertEquals(10, this.limits.getLimit(LIMIT_TYPE));
 
@@ -605,14 +667,14 @@ class DefaultRenderingLimitsTest
 
         assertEquals(1, this.logCapture.size());
         assertEquals("The [test] limit for rendering a page has been exceeded while rendering [xwiki:Space.Page]:"
-            + " [101] instead of the limit of [100]. A wiki administrator can change the limit with"
+            + " [101] instead of the limit of [100] (profiles: []). A wiki administrator can change the limit with"
             + " the [rendering.limits.test.limit] property in xwiki.properties.", this.logCapture.getMessage(0));
     }
 
     @Test
     void exceedingALimitIsReportedInTheLogMode()
     {
-        when(this.configuration.getMode()).thenReturn(RenderingLimitsMode.LOG);
+        when(this.configuration.getMode(List.of())).thenReturn(RenderingLimitsMode.LOG);
 
         this.limits.charge(LIMIT_TYPE, 101);
 
@@ -622,7 +684,7 @@ class DefaultRenderingLimitsTest
     @Test
     void exceedingALimitIsNotReportedInTheDisabledMode()
     {
-        when(this.configuration.getMode()).thenReturn(RenderingLimitsMode.DISABLED);
+        when(this.configuration.getMode(List.of())).thenReturn(RenderingLimitsMode.DISABLED);
 
         this.limits.charge(LIMIT_TYPE, 101);
 

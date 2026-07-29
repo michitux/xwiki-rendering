@@ -19,6 +19,7 @@
  */
 package org.xwiki.rendering.internal.limits;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.OptionalInt;
@@ -51,6 +52,8 @@ public class RenderingLimitsConfiguration
     private static final String RECURSION_PREFIX = "rendering.recursion.";
 
     private static final String LIMITS_PREFIX = "rendering.limits.";
+
+    private static final String PROFILE_INFIX = "profile.";
 
     private static final String LIMIT_SUFFIX = ".limit";
 
@@ -92,24 +95,26 @@ public class RenderingLimitsConfiguration
      * This also means that a mock of this component behaves like a wiki without any configured limit.
      *
      * @param type the type of limit to get the budget for
+     * @param profiles the profiles that apply to the current execution, the most specific one first
      * @return the configured budget for the given type, empty when it isn't configured
      */
-    public OptionalLong getConfiguredLimit(RenderingLimitType type)
+    public OptionalLong getConfiguredLimit(RenderingLimitType type, List<String> profiles)
     {
-        return this.limitCache.computeIfAbsent(type.getName(), name -> {
-            Long limit = getProperty(LIMITS_PREFIX + name + LIMIT_SUFFIX, Long.class);
+        return this.limitCache.computeIfAbsent(getCacheKey(type.getName(), profiles), key -> {
+            Long limit = getProperty(profiles, type.getName() + LIMIT_SUFFIX, Long.class);
 
             return limit == null ? OptionalLong.empty() : OptionalLong.of(limit);
         });
     }
 
     /**
+     * @param profiles the profiles that apply to the current execution, the most specific one first
      * @return how the budgets shall be applied, {@link RenderingLimitsMode#ENFORCE} unless configured otherwise
      */
-    public RenderingLimitsMode getMode()
+    public RenderingLimitsMode getMode(List<String> profiles)
     {
-        return this.modeCache.computeIfAbsent(MODE,
-            suffix -> parseMode(getProperty(LIMITS_PREFIX + suffix, String.class)));
+        return this.modeCache.computeIfAbsent(getCacheKey(MODE, profiles),
+            key -> parseMode(getProperty(profiles, MODE, String.class)));
     }
 
     private RenderingLimitsMode parseMode(String value)
@@ -131,8 +136,31 @@ public class RenderingLimitsConfiguration
         return parsedMode;
     }
 
+    /**
+     * @param profiles the profiles to look the property up in before falling back to the global configuration
+     * @param suffix the part of the property name that follows the prefix of the limits and, if any, of the profile
+     * @return the first configured value, {@code null} when it is configured in none of them
+     */
+    private <T> T getProperty(List<String> profiles, String suffix, Class<T> valueClass)
+    {
+        for (String profile : profiles) {
+            T value = getProperty(LIMITS_PREFIX + PROFILE_INFIX + profile + '.' + suffix, valueClass);
+
+            if (value != null) {
+                return value;
+            }
+        }
+
+        return getProperty(LIMITS_PREFIX + suffix, valueClass);
+    }
+
     private <T> T getProperty(String key, Class<T> valueClass)
     {
         return this.configurationSourceProvider.get().getProperty(key, valueClass, null);
+    }
+
+    private static String getCacheKey(String suffix, List<String> profiles)
+    {
+        return profiles.isEmpty() ? suffix : String.join(",", profiles) + '|' + suffix;
     }
 }
