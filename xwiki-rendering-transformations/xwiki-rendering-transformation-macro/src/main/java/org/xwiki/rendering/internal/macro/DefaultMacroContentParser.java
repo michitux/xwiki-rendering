@@ -36,10 +36,13 @@ import org.xwiki.rendering.block.Block;
 import org.xwiki.rendering.block.MacroBlock;
 import org.xwiki.rendering.block.XDOM;
 import org.xwiki.rendering.internal.transformation.MutableRenderingContext;
+import org.xwiki.rendering.limits.RenderingLimitType;
+import org.xwiki.rendering.limits.RenderingLimits;
 import org.xwiki.rendering.listener.MetaData;
 import org.xwiki.rendering.macro.MacroContentParser;
 import org.xwiki.rendering.macro.MacroExecutionException;
 import org.xwiki.rendering.macro.MacroPreparationException;
+import org.xwiki.rendering.macro.MacroRenderingLimitExceededException;
 import org.xwiki.rendering.parser.Parser;
 import org.xwiki.rendering.syntax.Syntax;
 import org.xwiki.rendering.transformation.MacroTransformationContext;
@@ -74,6 +77,9 @@ public class DefaultMacroContentParser implements MacroContentParser
     @Inject
     @Named("macro")
     private Transformation transformation;
+
+    @Inject
+    private RenderingLimits renderingLimits;
 
     /**
      * Utility to remove the top level paragraph.
@@ -148,6 +154,15 @@ public class DefaultMacroContentParser implements MacroContentParser
 
         // Parse the content if not already prepared.
         if (result == null) {
+            // Content that is only known when the macro executes, like the output of a script macro, is parsed here
+            // instead of when the macro is prepared, so refuse to even parse it when it cannot fit anymore. What the
+            // macro finally produces is charged by the macro transformation.
+            if (this.renderingLimits.exceeds(RenderingLimitType.DOCUMENT_SIZE, content.length())) {
+                throw new MacroRenderingLimitExceededException(RenderingLimitType.DOCUMENT_SIZE,
+                    "The content doesn't fit into the remaining size limit for rendering this page, so it hasn't been"
+                        + " parsed.");
+            }
+
             result = parse(content, syntax, inline, idGenerator);
         } else {
             result = adaptPreparedXDOM(result, macroContext, idGenerator, inline);

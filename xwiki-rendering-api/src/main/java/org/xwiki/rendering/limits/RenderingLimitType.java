@@ -48,6 +48,13 @@ public final class RenderingLimitType
         new RenderingLimitType("macro.executions", 100_000, 100, "1");
 
     /**
+     * The size of the content that the macros of one rendering may produce, counted as a rough estimate that also
+     * counts content several times when it passes through several macros, so the limit is set generously.
+     */
+    public static final RenderingLimitType DOCUMENT_SIZE =
+        new RenderingLimitType("document.size", 10L * 1024 * 1024, 64L * 1024, "By");
+
+    /**
      * The time that one rendering may take, checked between two macro executions, so a single macro that never
      * returns isn't caught by it.
      */

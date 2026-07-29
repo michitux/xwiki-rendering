@@ -52,6 +52,7 @@ import org.xwiki.test.junit5.mockito.MockComponent;
 import org.xwiki.test.mockito.MockitoComponentManager;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -124,6 +125,22 @@ class MacroTransformationLimitsTest
         assertEquals(1, StringUtils.countMatches(result, "beginGroup [[class]=[xwikirenderingerror]]"));
         assertTrue(result.contains("The [" + RECURSIVE_MACRO + "] macro couldn't be executed as the [macro.executions]"
             + " limit of [3] for rendering a page has been reached."), result);
+    }
+
+    @Test
+    void documentSizeLimitDropsWhatTheMacroProduced() throws Exception
+    {
+        when(this.limitsConfiguration.getConfiguredLimit(RenderingLimitType.DOCUMENT_SIZE))
+            .thenReturn(OptionalLong.of(1));
+
+        XDOM dom = new XDOM(List.of((Block) new MacroBlock("testsimplemacro", Map.of(), false)));
+
+        String result = transformAndRenderEvents(dom);
+
+        assertTrue(result.contains("The [testsimplemacro] macro couldn't be executed as the [document.size] limit of"
+            + " [1] for rendering a page has been reached."), result);
+        // What the macro produced is dropped instead of being kept and sent to the client.
+        assertFalse(result.contains("onWord [simplemacro"), result);
     }
 
     private String transformAndRenderEvents(XDOM dom) throws Exception

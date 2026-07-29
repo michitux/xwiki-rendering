@@ -28,6 +28,7 @@ import java.util.Map;
 import javax.inject.Named;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.mutable.MutableBoolean;
 import org.apache.commons.lang3.mutable.MutableInt;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -47,7 +48,9 @@ import org.xwiki.rendering.limits.RenderingLimitType;
 import org.xwiki.rendering.limits.RenderingLimits;
 import org.xwiki.rendering.listener.Listener;
 import org.xwiki.rendering.macro.Macro;
+import org.xwiki.rendering.macro.MacroExecutionException;
 import org.xwiki.rendering.macro.MacroId;
+import org.xwiki.rendering.macro.MacroRenderingLimitExceededException;
 import org.xwiki.rendering.macro.descriptor.DefaultMacroDescriptor;
 import org.xwiki.rendering.macro.descriptor.MacroDescriptor;
 import org.xwiki.rendering.renderer.BlockRenderer;
@@ -67,12 +70,15 @@ import org.xwiki.test.junit5.mockito.MockComponent;
 import org.xwiki.test.mockito.MockitoComponentManager;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -647,6 +653,70 @@ class MacroTransformationTest
 
         assertTrue(transformAndRenderEvents(dom).contains("The [testsimplemacro] macro couldn't be executed as the"
             + " [time] limit of [60000] for rendering a page has been reached."));
+    }
+
+    @Test
+    void sizeLimitDropsWhatTheMacroProduced() throws Exception
+    {
+        // The size limit is only exceeded once what the macro produced has been charged.
+        MutableBoolean exceeded = new MutableBoolean();
+        doAnswer(invocation -> {
+            exceeded.setTrue();
+            return null;
+        }).when(this.renderingLimits).charge(eq(RenderingLimitType.DOCUMENT_SIZE), anyLong());
+        when(this.renderingLimits.isExceeded(RenderingLimitType.DOCUMENT_SIZE))
+            .thenAnswer(invocation -> exceeded.getValue());
+        when(this.renderingLimits.getLimit(RenderingLimitType.DOCUMENT_SIZE)).thenReturn(1024L);
+
+        XDOM dom = new XDOM(List.of((Block) new MacroBlock("testsimplemacro", Map.of(), false)));
+
+        String result = transformAndRenderEvents(dom);
+
+        assertTrue(result.contains("The [testsimplemacro] macro couldn't be executed as the [document.size] limit of"
+            + " [1024] for rendering a page has been reached."), result);
+        // What the macro produced isn't part of the result.
+        assertFalse(result.contains("simplemacro0"), result);
+    }
+
+    @Test
+    void exhaustedSizeLimitStopsTheTransformationWithoutExecutingAMacro() throws Exception
+    {
+        when(this.renderingLimits.isExceeded(RenderingLimitType.DOCUMENT_SIZE)).thenReturn(true);
+        when(this.renderingLimits.getLimit(RenderingLimitType.DOCUMENT_SIZE)).thenReturn(1024L);
+
+        XDOM dom = new XDOM(List.of((Block) new MacroBlock("testsimplemacro", Map.of(), false)));
+
+        String result = transformAndRenderEvents(dom);
+
+        assertTrue(result.contains("The [testsimplemacro] macro couldn't be executed as the [document.size] limit of"
+            + " [1024] for rendering a page has been reached."), result);
+        assertFalse(result.contains("simplemacro0"), result);
+        // The macro hasn't been executed at all, so no execution has been charged for it.
+        verify(this.renderingLimits, never()).charge(eq(RenderingLimitType.MACRO_EXECUTIONS), anyLong());
+    }
+
+    @Test
+    void limitExceededByAMacroIsReportedAsALimitError() throws Exception
+    {
+        String macroId = "testLimitMacro";
+        // Wrap the exception as macros usually do when they catch what the macro content parser throws.
+        createMockMacro(macroId, 100, true, invocation -> {
+            throw new MacroExecutionException("Failed to parse the content",
+                new MacroRenderingLimitExceededException(RenderingLimitType.DOCUMENT_SIZE,
+                    "The content doesn't fit."));
+        });
+        when(this.renderingLimits.getLimit(RenderingLimitType.DOCUMENT_SIZE)).thenReturn(1024L);
+
+        XDOM dom = new XDOM(List.of(new MacroBlock(macroId, Map.of(), false),
+            new MacroBlock("testsimplemacro", Map.of(), false)));
+
+        String result = transformAndRenderEvents(dom);
+
+        assertTrue(result.contains("The [testLimitMacro] macro couldn't be executed as the [document.size] limit of"
+            + " [1024] for rendering a page has been reached."), result);
+        assertFalse(result.contains("Failed to execute"), result);
+        // A single piece of content that doesn't fit doesn't stop the transformation.
+        assertTrue(result.contains("onWord [simplemacro"), result);
     }
 
     @Test
