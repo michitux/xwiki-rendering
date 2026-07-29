@@ -25,9 +25,17 @@ import org.xwiki.stability.Unstable;
  * An opaque snapshot of the state of {@link RenderingLimits}, to be carried over to an execution that runs in a
  * different thread and thus in a different execution context, in particular an asynchronous rendering.
  * <p>
- * The recursion depths are <em>copied</em>: the depths of the execution the snapshot is restored into go up and down
- * independently from the depths of the execution it was taken from, but they start from the depth that was already
- * reached, so that crossing a thread boundary cannot be used to get a fresh recursion budget.
+ * The two halves of the state are carried over with different semantics, which is the reason why crossing a thread
+ * boundary needs an explicit snapshot instead of just relying on the execution context:
+ * <ul>
+ * <li>the recursion depths are <em>copied</em>: the depths of the execution the snapshot is restored into go up and
+ * down independently from the depths of the execution it was taken from, but they start from the depth that was
+ * already reached, so that crossing a thread boundary cannot be used to get a fresh recursion budget;</li>
+ * <li>the budgets are <em>shared by reference</em>: whatever the other execution charges counts against the same
+ * budgets, so that crossing a thread boundary cannot be used to get a fresh budget either.</li>
+ * </ul>
+ * Sharing the budgets by reference means that a snapshot is not serializable, so it may only be passed to another
+ * thread of the same JVM.
  *
  * @version $Id$
  * @since 18.7.0RC1

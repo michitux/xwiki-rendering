@@ -190,6 +190,11 @@ public class DefaultRenderingContext implements MutableRenderingContext
         // Guard against transformations that recursively trigger themselves, which would otherwise end in a stack
         // overflow. Note that the recursion depth is counted separately from the context stack below as that stack
         // also gets pushed for reasons that have nothing to do with recursion, e.g. by the RenderingContextStore.
+        // This is also where the budgets for a rendering are installed as an outermost transformation is what defines
+        // one rendering, see RenderingLimits#enterTransformation(). Every transformation goes through here, so a
+        // transformation manager that performs several transformations performs several sequential outermost
+        // transformations, each with its own budgets - which is harmless as only the macro transformation charges
+        // anything.
         try (RenderingLimitsScope level = this.renderingLimits.enterTransformation()) {
             try {
                 push(transformation, context);

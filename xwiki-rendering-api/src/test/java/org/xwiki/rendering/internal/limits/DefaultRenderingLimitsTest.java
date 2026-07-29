@@ -19,22 +19,31 @@
  */
 package org.xwiki.rendering.internal.limits;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.OptionalLong;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.xwiki.context.Execution;
 import org.xwiki.context.ExecutionContext;
 import org.xwiki.rendering.limits.RecursionLimitExceededException;
 import org.xwiki.rendering.limits.RecursionType;
+import org.xwiki.rendering.limits.RenderingLimitType;
 import org.xwiki.rendering.limits.RenderingLimitsScope;
 import org.xwiki.rendering.limits.RenderingLimitsSnapshot;
+import org.xwiki.rendering.transformation.RenderingContext;
+import org.xwiki.test.LogLevel;
+import org.xwiki.test.junit5.LogCaptureExtension;
 import org.xwiki.test.junit5.mockito.ComponentTest;
 import org.xwiki.test.junit5.mockito.InjectMockComponents;
 import org.xwiki.test.junit5.mockito.MockComponent;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.when;
@@ -51,6 +60,20 @@ class DefaultRenderingLimitsTest
 
     private static final RecursionType OTHER_TYPE = new RecursionType("other", 3, 2);
 
+    private static final RenderingLimitType LIMIT_TYPE = new RenderingLimitType("test", 100, 10, "1");
+
+    private static final RenderingLimitType OTHER_LIMIT_TYPE = new RenderingLimitType("other", 100, 10, "1");
+
+    private static final RenderingLimitType TIME_TYPE = new RenderingLimitType("time", 10_000, 100, "ms");
+
+    /**
+     * How long to wait when the test needs some measurable time to have elapsed.
+     */
+    private static final long SLEEP_MILLIS = 50;
+
+    @RegisterExtension
+    private LogCaptureExtension logCapture = new LogCaptureExtension(LogLevel.WARN);
+
     @InjectMockComponents
     private DefaultRenderingLimits limits;
 
@@ -60,12 +83,24 @@ class DefaultRenderingLimitsTest
     @MockComponent
     private RenderingLimitsConfiguration configuration;
 
+    @MockComponent
+    private RenderingContext renderingContext;
+
     private ExecutionContext executionContext = new ExecutionContext();
 
     @BeforeEach
     void setUp()
     {
         when(this.execution.getContext()).thenAnswer(invocation -> this.executionContext);
+        when(this.configuration.getMode()).thenReturn(RenderingLimitsMode.ENFORCE);
+    }
+
+    @AfterEach
+    void tearDown()
+    {
+        // Exceeding a limit is logged, the message itself is verified in the tests that are about the reporting.
+        this.logCapture.ignoreAllMessages(
+            List.of(event -> event.getMessage().contains("limit for rendering a page has been exceeded")));
     }
 
     @Test
@@ -201,28 +236,205 @@ class DefaultRenderingLimitsTest
     }
 
     @Test
-    void nestedTransformationsCountTheDepth() throws Exception
+    void budgetIsCharged()
+    {
+        assertEquals(0, this.limits.getCharged(LIMIT_TYPE));
+
+        this.limits.charge(LIMIT_TYPE, 40);
+        assertFalse(this.limits.isExceeded(LIMIT_TYPE));
+        assertEquals(40, this.limits.getCharged(LIMIT_TYPE));
+        assertEquals(0, this.limits.getCharged(OTHER_LIMIT_TYPE));
+
+        // Charging exactly the limit doesn't exceed it.
+        this.limits.charge(LIMIT_TYPE, 60);
+        assertFalse(this.limits.isExceeded(LIMIT_TYPE));
+        assertEquals(100, this.limits.getCharged(LIMIT_TYPE));
+
+        // Beyond the limit the charge is still counted.
+        this.limits.charge(LIMIT_TYPE, 1);
+        assertTrue(this.limits.isExceeded(LIMIT_TYPE));
+        assertFalse(this.limits.isExceeded(OTHER_LIMIT_TYPE));
+        assertEquals(101, this.limits.getCharged(LIMIT_TYPE));
+    }
+
+    @Test
+    void configuredLimitOverridesTheDefault()
+    {
+        when(this.configuration.getConfiguredLimit(LIMIT_TYPE)).thenReturn(OptionalLong.of(10));
+
+        this.limits.charge(LIMIT_TYPE, 10);
+        assertFalse(this.limits.isExceeded(LIMIT_TYPE));
+
+        this.limits.charge(LIMIT_TYPE, 1);
+        assertTrue(this.limits.isExceeded(LIMIT_TYPE));
+    }
+
+    @Test
+    void exceedsDoesNotCharge()
+    {
+        assertFalse(this.limits.exceeds(LIMIT_TYPE, 100));
+        assertTrue(this.limits.exceeds(LIMIT_TYPE, 101));
+        assertEquals(0, this.limits.getCharged(LIMIT_TYPE));
+
+        this.limits.charge(LIMIT_TYPE, 60);
+
+        assertFalse(this.limits.exceeds(LIMIT_TYPE, 40));
+        assertTrue(this.limits.exceeds(LIMIT_TYPE, 41));
+    }
+
+    @Test
+    void reserveAllowsChargingMore()
+    {
+        this.limits.charge(LIMIT_TYPE, 101);
+        assertTrue(this.limits.isExceeded(LIMIT_TYPE));
+
+        try (RenderingLimitsScope reserve = this.limits.enterReserve()) {
+            // The reserve of the type is 10 and 101 have been charged, so 9 more fit.
+            assertFalse(this.limits.isExceeded(LIMIT_TYPE));
+            assertFalse(this.limits.exceeds(LIMIT_TYPE, 9));
+            assertTrue(this.limits.exceeds(LIMIT_TYPE, 10));
+
+            this.limits.charge(LIMIT_TYPE, 9);
+            assertFalse(this.limits.isExceeded(LIMIT_TYPE));
+        }
+
+        assertTrue(this.limits.isExceeded(LIMIT_TYPE));
+    }
+
+    @Test
+    void budgetSurvivesExecutionContextInheritance()
+    {
+        this.limits.charge(LIMIT_TYPE, 40);
+
+        inheritExecutionContext();
+
+        assertEquals(40, this.limits.getCharged(LIMIT_TYPE));
+        this.limits.charge(LIMIT_TYPE, 2);
+        assertEquals(42, this.limits.getCharged(LIMIT_TYPE));
+    }
+
+    @Test
+    void eachOutermostTransformationGetsFreshBudgets() throws Exception
+    {
+        this.limits.charge(LIMIT_TYPE, 100);
+
+        try (RenderingLimitsScope transformation = this.limits.enterTransformation()) {
+            // The outermost transformation starts a new rendering, so it doesn't continue what was charged before it.
+            assertEquals(0, this.limits.getCharged(LIMIT_TYPE));
+            this.limits.charge(LIMIT_TYPE, 100);
+            assertFalse(this.limits.isExceeded(LIMIT_TYPE));
+        }
+
+        // The budgets aren't dropped when the transformation ends, they are replaced by the next outermost one. This
+        // is what lets charges from outside a transformation, like spawning an asynchronous execution while rendering
+        // a template, accumulate instead of getting a throwaway budget each.
+        assertEquals(100, this.limits.getCharged(LIMIT_TYPE));
+
+        try (RenderingLimitsScope transformation = this.limits.enterTransformation()) {
+            assertEquals(0, this.limits.getCharged(LIMIT_TYPE));
+        }
+    }
+
+    @Test
+    void nestedTransformationsShareTheBudgetsAndCountTheDepth() throws Exception
     {
         try (RenderingLimitsScope transformation = this.limits.enterTransformation()) {
-            assertEquals(1, this.limits.getDepth(DefaultRenderingLimits.TRANSFORMATION, null));
+            this.limits.charge(LIMIT_TYPE, 40);
 
             try (RenderingLimitsScope nested = this.limits.enterTransformation()) {
                 assertEquals(2, this.limits.getDepth(DefaultRenderingLimits.TRANSFORMATION, null));
+                assertEquals(40, this.limits.getCharged(LIMIT_TYPE));
+
+                this.limits.charge(LIMIT_TYPE, 2);
             }
 
             assertEquals(1, this.limits.getDepth(DefaultRenderingLimits.TRANSFORMATION, null));
+            assertEquals(42, this.limits.getCharged(LIMIT_TYPE));
         }
 
         assertEquals(0, this.limits.getDepth(DefaultRenderingLimits.TRANSFORMATION, null));
     }
 
     @Test
-    void saveAndRestoreCopyTheDepths() throws Exception
+    void propagatedBudgetsAreNotResetByTheOutermostTransformation() throws Exception
+    {
+        this.limits.charge(LIMIT_TYPE, 40);
+
+        RenderingLimitsSnapshot snapshot = this.limits.save();
+
+        // Simulate the asynchronous rendering: another thread continuing the rendering that spawned it, so its
+        // outermost transformation must keep the propagated budgets instead of starting a rendering of its own.
+        this.executionContext = new ExecutionContext();
+        this.limits.restore(snapshot);
+
+        try (RenderingLimitsScope transformation = this.limits.enterTransformation()) {
+            assertEquals(40, this.limits.getCharged(LIMIT_TYPE));
+        }
+    }
+
+    @Test
+    void aSecondRenderingInTheSameExecutionContextStartsFromZero() throws Exception
+    {
+        // The shape of an execution context that outlives a single rendering, like a mail preparation thread or a job
+        // that renders many documents.
+        try (RenderingLimitsScope first = this.limits.enterTransformation()) {
+            this.limits.charge(LIMIT_TYPE, 100);
+            this.limits.chargeElapsedTime(TIME_TYPE);
+        }
+
+        Thread.sleep(2 * SLEEP_MILLIS);
+
+        try (RenderingLimitsScope second = this.limits.enterTransformation()) {
+            assertEquals(0, this.limits.getCharged(LIMIT_TYPE));
+
+            this.limits.chargeElapsedTime(TIME_TYPE);
+
+            // The clock restarted with the budgets, so the time between the two renderings isn't charged to the second
+            // one, which would otherwise refuse every macro after a delay.
+            long charged = this.limits.getCharged(TIME_TYPE);
+            assertTrue(charged < SLEEP_MILLIS, "Expected the second rendering to charge its own elapsed time only but"
+                + " got [%d] ms".formatted(charged));
+        }
+    }
+
+    @Test
+    void logModeCountsWithoutEnforcing()
+    {
+        when(this.configuration.getMode()).thenReturn(RenderingLimitsMode.LOG);
+
+        this.limits.charge(LIMIT_TYPE, 1000);
+
+        assertEquals(1000, this.limits.getCharged(LIMIT_TYPE));
+        assertFalse(this.limits.isExceeded(LIMIT_TYPE));
+        assertFalse(this.limits.exceeds(LIMIT_TYPE, 1000));
+    }
+
+    @Test
+    void disabledModeDoesNotCount()
+    {
+        when(this.configuration.getMode()).thenReturn(RenderingLimitsMode.DISABLED);
+
+        this.limits.charge(LIMIT_TYPE, 1000);
+        this.limits.chargeElapsedTime(TIME_TYPE);
+
+        assertEquals(0, this.limits.getCharged(LIMIT_TYPE));
+        assertEquals(0, this.limits.getCharged(TIME_TYPE));
+        assertFalse(this.limits.isExceeded(LIMIT_TYPE));
+        assertFalse(this.limits.exceeds(LIMIT_TYPE, 1000));
+        // Nothing has been stored in the execution context, in particular no final property that would prevent the
+        // limits from being enabled again for an execution context inheriting from this one.
+        assertFalse(this.executionContext.hasProperty(DefaultRenderingLimits.ECONTEXT_KEY));
+    }
+
+    @Test
+    void saveAndRestoreCopyTheDepthsAndShareTheBudgets() throws Exception
     {
         RenderingLimitsSnapshot snapshot;
 
         try (RenderingLimitsScope first = this.limits.enter(TYPE, null);
             RenderingLimitsScope second = this.limits.enter(TYPE, "a")) {
+
+            this.limits.charge(LIMIT_TYPE, 40);
 
             snapshot = this.limits.save();
         }
@@ -239,12 +451,13 @@ class DefaultRenderingLimitsTest
         assertEquals(1, this.limits.getDepth(TYPE, null));
         assertEquals(1, this.limits.getDepth(TYPE, "a"));
 
-        try (RenderingLimitsScope nested = this.limits.enter(TYPE, null)) {
-            assertEquals(2, this.limits.getDepth(TYPE, null));
-        }
+        // The budgets are shared, so what is charged here also counts in the spawning execution.
+        assertEquals(40, this.limits.getCharged(LIMIT_TYPE));
+        this.limits.charge(LIMIT_TYPE, 2);
 
         this.executionContext = spawningContext;
 
+        assertEquals(42, this.limits.getCharged(LIMIT_TYPE));
         // The depths of the other execution didn't leak into this one.
         assertEquals(0, this.limits.getDepth(TYPE, null));
     }
@@ -253,6 +466,14 @@ class DefaultRenderingLimitsTest
     void saveWithoutAnyStateIsEmpty()
     {
         assertTrue(this.limits.save().isEmpty());
+    }
+
+    @Test
+    void saveOfAChargeOnlyStateIsNotEmpty()
+    {
+        this.limits.charge(LIMIT_TYPE, 1);
+
+        assertFalse(this.limits.save().isEmpty());
     }
 
     @Test
@@ -265,6 +486,10 @@ class DefaultRenderingLimitsTest
         }
 
         assertEquals(0, this.limits.getDepth(TYPE, null));
+        this.limits.charge(LIMIT_TYPE, 1000);
+        assertEquals(0, this.limits.getCharged(LIMIT_TYPE));
+        assertFalse(this.limits.isExceeded(LIMIT_TYPE));
+        assertFalse(this.limits.exceeds(LIMIT_TYPE, 1000));
         assertTrue(this.limits.save().isEmpty());
         this.limits.enterReserve().close();
         this.limits.enterTransformation().close();
@@ -279,6 +504,7 @@ class DefaultRenderingLimitsTest
         this.limits.restore(() -> false);
 
         assertEquals(0, this.limits.getDepth(TYPE, null));
+        assertEquals(0, this.limits.getCharged(LIMIT_TYPE));
     }
 
     /**
@@ -289,5 +515,117 @@ class DefaultRenderingLimitsTest
         ExecutionContext clonedContext = new ExecutionContext();
         clonedContext.inheritFrom(this.executionContext);
         this.executionContext = clonedContext;
+    }
+
+    @Test
+    void elapsedTimeIsChargedOnlyOnce() throws Exception
+    {
+        // The elapsed time is measured from the moment the limits started to be tracked.
+        this.limits.chargeElapsedTime(TIME_TYPE);
+
+        Thread.sleep(SLEEP_MILLIS);
+
+        this.limits.chargeElapsedTime(TIME_TYPE);
+
+        long charged = this.limits.getCharged(TIME_TYPE);
+        assertTrue(charged >= SLEEP_MILLIS, "Expected at least [%d] ms to be charged but got [%d]"
+            .formatted(SLEEP_MILLIS, charged));
+
+        // Charging again doesn't charge the elapsed time a second time, which is what makes it safe to call this from
+        // every nested rendering.
+        this.limits.chargeElapsedTime(TIME_TYPE);
+
+        long chargedAgain = this.limits.getCharged(TIME_TYPE);
+        assertTrue(chargedAgain < charged + SLEEP_MILLIS / 2,
+            "Expected the elapsed time not to be charged twice but got [%d] after [%d]".formatted(chargedAgain,
+                charged));
+    }
+
+    @Test
+    void elapsedTimeIsMeasuredPerExecutionAndChargedToTheSharedBudget() throws Exception
+    {
+        this.limits.chargeElapsedTime(TIME_TYPE);
+        Thread.sleep(SLEEP_MILLIS);
+        this.limits.chargeElapsedTime(TIME_TYPE);
+        long charged = this.limits.getCharged(TIME_TYPE);
+
+        RenderingLimitsSnapshot snapshot = this.limits.save();
+
+        // Simulate another thread with its own, fresh execution context, which measures its own elapsed time but
+        // charges it against the same budget.
+        this.executionContext = new ExecutionContext();
+        this.limits.restore(snapshot);
+
+        assertEquals(charged, this.limits.getCharged(TIME_TYPE));
+
+        this.limits.chargeElapsedTime(TIME_TYPE);
+
+        long chargedAgain = this.limits.getCharged(TIME_TYPE);
+        assertTrue(chargedAgain < charged + SLEEP_MILLIS / 2,
+            "Expected the other execution to charge its own elapsed time only but got [%d] after [%d]"
+                .formatted(chargedAgain, charged));
+    }
+
+    @Test
+    void elapsedTimeLimitIsEnforced() throws Exception
+    {
+        when(this.configuration.getConfiguredLimit(TIME_TYPE)).thenReturn(OptionalLong.of(1));
+
+        this.limits.chargeElapsedTime(TIME_TYPE);
+        assertFalse(this.limits.isExceeded(TIME_TYPE));
+
+        Thread.sleep(SLEEP_MILLIS);
+
+        this.limits.chargeElapsedTime(TIME_TYPE);
+        assertTrue(this.limits.isExceeded(TIME_TYPE));
+    }
+
+    @Test
+    void getLimit()
+    {
+        assertEquals(100, this.limits.getLimit(LIMIT_TYPE));
+
+        when(this.configuration.getConfiguredLimit(LIMIT_TYPE)).thenReturn(OptionalLong.of(10));
+
+        assertEquals(10, this.limits.getLimit(LIMIT_TYPE));
+
+        try (RenderingLimitsScope reserve = this.limits.enterReserve()) {
+            assertEquals(20, this.limits.getLimit(LIMIT_TYPE));
+        }
+    }
+
+    @Test
+    void exceedingALimitIsReportedOnce()
+    {
+        when(this.renderingContext.getTransformationId()).thenReturn("xwiki:Space.Page");
+
+        this.limits.charge(LIMIT_TYPE, 101);
+        this.limits.charge(LIMIT_TYPE, 1);
+        this.limits.charge(OTHER_LIMIT_TYPE, 1);
+
+        assertEquals(1, this.logCapture.size());
+        assertEquals("The [test] limit for rendering a page has been exceeded while rendering [xwiki:Space.Page]:"
+            + " [101] instead of the limit of [100]. A wiki administrator can change the limit with"
+            + " the [rendering.limits.test.limit] property in xwiki.properties.", this.logCapture.getMessage(0));
+    }
+
+    @Test
+    void exceedingALimitIsReportedInTheLogMode()
+    {
+        when(this.configuration.getMode()).thenReturn(RenderingLimitsMode.LOG);
+
+        this.limits.charge(LIMIT_TYPE, 101);
+
+        assertEquals(1, this.logCapture.size());
+    }
+
+    @Test
+    void exceedingALimitIsNotReportedInTheDisabledMode()
+    {
+        when(this.configuration.getMode()).thenReturn(RenderingLimitsMode.DISABLED);
+
+        this.limits.charge(LIMIT_TYPE, 101);
+
+        assertEquals(0, this.logCapture.size());
     }
 }

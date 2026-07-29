@@ -31,11 +31,12 @@ import org.xwiki.stability.Unstable;
  * {@code xwiki.properties} through the {@code rendering.recursion.<name>.limit} property.
  * <p>
  * These limits protect against stack overflows and against user error, they are not a budget for the whole rendering
- * of a page: the depth associated with a type goes up when a level is entered and back down when it is left.
+ * of a page: the depth associated with a type goes up when a level is entered and back down when it is left. See
+ * {@link RenderingLimitType} for the budgets.
  * <p>
- * The types aren't declared here as each of them belongs to the component that guards it. As every one of them has to
- * be documented in {@code xwiki.properties} by hand, here is where the ones that ship with XWiki are declared, so that
- * the whole set can be found from one place:
+ * Unlike the budgets, the types aren't declared here as each of them belongs to the component that guards it. As every
+ * one of them has to be documented in {@code xwiki.properties} by hand, here is where the ones that ship with XWiki are
+ * declared, so that the whole set can be found from one place:
  * <ul>
  *   <li>{@code transformation} in {@code DefaultRenderingLimits}, entered by
  *       {@link RenderingLimits#enterTransformation()}</li>

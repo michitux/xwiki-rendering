@@ -19,8 +19,10 @@
  */
 package org.xwiki.rendering.internal.limits;
 
+import java.util.Locale;
 import java.util.Map;
 import java.util.OptionalInt;
+import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentHashMap;
 
 import javax.inject.Inject;
@@ -28,9 +30,13 @@ import javax.inject.Named;
 import javax.inject.Provider;
 import javax.inject.Singleton;
 
+import org.apache.commons.lang3.EnumUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
 import org.xwiki.component.annotation.Component;
 import org.xwiki.configuration.ConfigurationSource;
 import org.xwiki.rendering.limits.RecursionType;
+import org.xwiki.rendering.limits.RenderingLimitType;
 
 /**
  * A caching wrapper around the configuration of the limits that apply to the rendering of a page.
@@ -44,15 +50,26 @@ public class RenderingLimitsConfiguration
 {
     private static final String RECURSION_PREFIX = "rendering.recursion.";
 
+    private static final String LIMITS_PREFIX = "rendering.limits.";
+
     private static final String LIMIT_SUFFIX = ".limit";
+
+    private static final String MODE = "mode";
 
     @Inject
     @Named("restricted")
     private Provider<ConfigurationSource> configurationSourceProvider;
 
+    @Inject
+    private Logger logger;
+
     // Cache configuration values as converting the configuration value to Integer is kind of slow because it uses a
-    // context component manager, while the limits are read for every single transformation.
+    // context component manager, while the limits are read for every single transformation and every single charge.
     private final Map<String, OptionalInt> recursionLimitCache = new ConcurrentHashMap<>();
+
+    private final Map<String, OptionalLong> limitCache = new ConcurrentHashMap<>();
+
+    private final Map<String, RenderingLimitsMode> modeCache = new ConcurrentHashMap<>();
 
     /**
      * Only the configured override is returned, the default limit is part of the {@link RecursionType} itself. This
@@ -68,6 +85,50 @@ public class RenderingLimitsConfiguration
 
             return limit == null ? OptionalInt.empty() : OptionalInt.of(limit);
         });
+    }
+
+    /**
+     * Only the configured override is returned, the default limit is part of the {@link RenderingLimitType} itself.
+     * This also means that a mock of this component behaves like a wiki without any configured limit.
+     *
+     * @param type the type of limit to get the budget for
+     * @return the configured budget for the given type, empty when it isn't configured
+     */
+    public OptionalLong getConfiguredLimit(RenderingLimitType type)
+    {
+        return this.limitCache.computeIfAbsent(type.getName(), name -> {
+            Long limit = getProperty(LIMITS_PREFIX + name + LIMIT_SUFFIX, Long.class);
+
+            return limit == null ? OptionalLong.empty() : OptionalLong.of(limit);
+        });
+    }
+
+    /**
+     * @return how the budgets shall be applied, {@link RenderingLimitsMode#ENFORCE} unless configured otherwise
+     */
+    public RenderingLimitsMode getMode()
+    {
+        return this.modeCache.computeIfAbsent(MODE,
+            suffix -> parseMode(getProperty(LIMITS_PREFIX + suffix, String.class)));
+    }
+
+    private RenderingLimitsMode parseMode(String value)
+    {
+        if (StringUtils.isBlank(value)) {
+            return RenderingLimitsMode.ENFORCE;
+        }
+
+        RenderingLimitsMode parsedMode =
+            EnumUtils.getEnum(RenderingLimitsMode.class, value.trim().toUpperCase(Locale.ROOT));
+
+        if (parsedMode == null) {
+            this.logger.warn("Ignoring the unknown rendering limits mode [{}], using [{}] instead. Supported modes"
+                + " are {}.", value, RenderingLimitsMode.ENFORCE, RenderingLimitsMode.values());
+
+            return RenderingLimitsMode.ENFORCE;
+        }
+
+        return parsedMode;
     }
 
     private <T> T getProperty(String key, Class<T> valueClass)

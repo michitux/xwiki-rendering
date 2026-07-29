@@ -44,6 +44,8 @@ import org.xwiki.rendering.block.MacroMarkerBlock;
 import org.xwiki.rendering.block.MetaDataBlock;
 import org.xwiki.rendering.block.match.BlockMatcher;
 import org.xwiki.rendering.internal.transformation.MutableRenderingContext;
+import org.xwiki.rendering.limits.RenderingLimitType;
+import org.xwiki.rendering.limits.RenderingLimits;
 import org.xwiki.rendering.listener.MetaData;
 import org.xwiki.rendering.macro.Macro;
 import org.xwiki.rendering.macro.MacroId;
@@ -84,6 +86,8 @@ public class MacroTransformation extends AbstractTransformation implements Initi
     private static final String TM_STANDALONEMACRO = "rendering.macro.error.standalone";
 
     private static final String TM_INVALIDMACROPARAMETER = "rendering.macro.error.invalidParameter";
+
+    private static final String TM_LIMITEXCEEDED = "rendering.macro.error.limitExceeded";
 
     private static class MacroLookupExceptionElement
     {
@@ -335,6 +339,9 @@ public class MacroTransformation extends AbstractTransformation implements Initi
     @Inject
     private IsolatedExecutionConfiguration isolatedExecutionConfiguration;
 
+    @Inject
+    private RenderingLimits renderingLimits;
+
     /**
      * Used to generate Macro error blocks when a Macro fails to execute.
      */
@@ -384,6 +391,15 @@ public class MacroTransformation extends AbstractTransformation implements Initi
             MacroBlock macroBlock = macroItem.block();
             Macro<?> macro = macroItem.macro();
 
+            // Stop executing macros when a budget for the whole page is exhausted, reporting it in the place of the
+            // macro that would have been executed next.
+            RenderingLimitType exhaustedLimit = chargeExecution();
+            if (exhaustedLimit != null) {
+                generateLimitError(macroBlock, exhaustedLimit);
+
+                return;
+            }
+
             boolean incrementRecursions = macroBlock.getParent() instanceof MacroMarkerBlock;
 
             List<Block> newBlocks;
@@ -395,7 +411,7 @@ public class MacroTransformation extends AbstractTransformation implements Initi
                         // The macro doesn't support inline mode, raise a warning but continue.
                         // The macro will not be executed and we generate an error message instead of the macro
                         // execution result.
-                        this.macroErrorManager.generateError(macroBlock, TM_STANDALONEMACRO,
+                        generateError(macroBlock, TM_STANDALONEMACRO,
                             "The [{}] macro is a standalone macro and it cannot be used inline",
                             "This macro generates standalone content. As a consequence you need to make sure to use a "
                                 + "syntax that separates your macro from the content before and after it so that it's on a "
@@ -422,7 +438,7 @@ public class MacroTransformation extends AbstractTransformation implements Initi
                     // One macro parameter was invalid.
                     // The macro will not be executed and we generate an error message instead of the macro
                     // execution result.
-                    this.macroErrorManager.generateError(macroBlock, TM_INVALIDMACROPARAMETER,
+                    generateError(macroBlock, TM_INVALIDMACROPARAMETER,
                         "Invalid macro parameters used for the [{}] macro.", null, macroBlock.getId(), e);
 
                     continue;
@@ -449,7 +465,7 @@ public class MacroTransformation extends AbstractTransformation implements Initi
                             + "error can be displayed. The root cause of the error is: [{}]", macroBlock.getId(),
                         ExceptionUtils.getRootCauseMessage(e));
                 } else {
-                    this.macroErrorManager.generateError(macroBlock, TM_FAILEDMACRO,
+                    generateError(macroBlock, TM_FAILEDMACRO,
                         "Failed to execute the [{}] macro.", null, macroBlock.getId(), e);
                 }
 
@@ -485,19 +501,81 @@ public class MacroTransformation extends AbstractTransformation implements Initi
         }
     }
 
+    /**
+     * Charge the execution of a macro against the budgets that are checked between two macro executions.
+     * <p>
+     * The limits that are only checked here are tested before the ones that are also charged here so that the reported
+     * limit is one that is actually exhausted and so that nothing is charged when the macro isn't executed anyway.
+     *
+     * @return the type of the first exhausted limit, {@code null} when the macro may be executed
+     */
+    private RenderingLimitType chargeExecution()
+    {
+        this.renderingLimits.chargeElapsedTime(RenderingLimitType.TIME);
+
+        if (this.renderingLimits.isExceeded(RenderingLimitType.TIME)) {
+            return RenderingLimitType.TIME;
+        }
+
+        this.renderingLimits.charge(RenderingLimitType.MACRO_EXECUTIONS, 1);
+
+        if (this.renderingLimits.isExceeded(RenderingLimitType.MACRO_EXECUTIONS)) {
+            return RenderingLimitType.MACRO_EXECUTIONS;
+        }
+
+        return null;
+    }
+
+    private void generateLimitError(MacroBlock macroBlock, RenderingLimitType type)
+    {
+        generateError(macroBlock, TM_LIMITEXCEEDED,
+            "The [{}] macro couldn't be executed as the [{}] limit of [{}] for rendering a page has been reached.",
+            "The rendering of a page is limited to protect the server against pages that consume too many resources."
+                + " A wiki administrator can change these limits in xwiki.properties.",
+            macroBlock.getId(), type.getName(), this.renderingLimits.getLimit(type));
+    }
+
+    /**
+     * Generate an error block in the place of the given macro, unless too many of them have been generated already.
+     *
+     * @see MacroErrorManager#generateError(MacroBlock, String, String, String, Object...)
+     */
+    private void generateError(MacroBlock macroBlock, String messageId, String defaultMessage,
+        String defaultDescription, Object... arguments)
+    {
+        if (macroBlock.getParent() == null) {
+            // The macro removed itself from the document, so there is no place to display the error in.
+            this.logger.warn("Not reporting an error for the [{}] macro as it isn't part of the document anymore.",
+                macroBlock.getId());
+
+            return;
+        }
+
+        this.renderingLimits.charge(RenderingLimitType.ERROR_MESSAGES, 1);
+
+        if (this.renderingLimits.isExceeded(RenderingLimitType.ERROR_MESSAGES)) {
+            this.logger.warn("Not reporting that the [{}] macro couldn't be executed as the maximum number of error"
+                + " messages for a page has been reached.", macroBlock.getId());
+
+            return;
+        }
+
+        this.macroErrorManager.generateError(macroBlock, messageId, defaultMessage, defaultDescription, arguments);
+    }
+
     private void processErrors(PriorityMacroBlockMatcher priorityMacroBlockMatcher)
     {
         if (priorityMacroBlockMatcher.getErrors() != null) {
             for (MacroLookupExceptionElement error : priorityMacroBlockMatcher.getErrors()) {
                 if (error.getException() instanceof MacroNotFoundException) {
                     // Macro cannot be found. Generate an error message instead of the macro execution result.
-                    this.macroErrorManager.generateError(error.getMacroBlock(), TM_UNKNOWNMACRO,
+                    generateError(error.getMacroBlock(), TM_UNKNOWNMACRO,
                         "Unknown macro: {}.",
                         "The [{}] macro is not in the list of registered macros. Verify the spelling or "
                             + "contact your administrator.",
                         error.getMacroBlock().getId());
                 } else {
-                    this.macroErrorManager.generateError(error.getMacroBlock(), TM_INVALIDMACRO,
+                    generateError(error.getMacroBlock(), TM_INVALIDMACRO,
                         "Invalid macro: {}.", null, error.getMacroBlock().getId(), error.getException());
                 }
             }

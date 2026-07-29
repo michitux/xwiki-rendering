@@ -31,6 +31,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.mutable.MutableInt;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -41,6 +42,9 @@ import org.xwiki.rendering.block.Block;
 import org.xwiki.rendering.block.MacroBlock;
 import org.xwiki.rendering.block.WordBlock;
 import org.xwiki.rendering.block.XDOM;
+import org.xwiki.rendering.internal.limits.DefaultRenderingLimits;
+import org.xwiki.rendering.limits.RenderingLimitType;
+import org.xwiki.rendering.limits.RenderingLimits;
 import org.xwiki.rendering.listener.Listener;
 import org.xwiki.rendering.macro.Macro;
 import org.xwiki.rendering.macro.MacroId;
@@ -53,7 +57,9 @@ import org.xwiki.rendering.syntax.Syntax;
 import org.xwiki.rendering.transformation.MacroTransformationContext;
 import org.xwiki.rendering.transformation.TransformationContext;
 import org.xwiki.rendering.transformation.TransformationException;
+import org.xwiki.test.LogLevel;
 import org.xwiki.test.annotation.AllComponents;
+import org.xwiki.test.junit5.LogCaptureExtension;
 import org.xwiki.test.junit5.mockito.ComponentTest;
 import org.xwiki.test.junit5.mockito.InjectComponentManager;
 import org.xwiki.test.junit5.mockito.InjectMockComponents;
@@ -75,7 +81,7 @@ import static org.mockito.Mockito.when;
  *
  * @version $Id$
  */
-@AllComponents(excludes = IsolatedExecutionConfiguration.class)
+@AllComponents(excludes = { IsolatedExecutionConfiguration.class, DefaultRenderingLimits.class })
 @ComponentTest
 class MacroTransformationTest
 {
@@ -89,12 +95,19 @@ class MacroTransformationTest
     @MockComponent
     private IsolatedExecutionConfiguration isolatedExecutionConfiguration;
 
+    @MockComponent
+    private RenderingLimits renderingLimits;
+
+    @RegisterExtension
+    private LogCaptureExtension logCapture = new LogCaptureExtension(LogLevel.WARN);
+
     @BeforeEach
     void setUp()
     {
         // By default, return whatever the macro specified.
         when(this.isolatedExecutionConfiguration.isExecutionIsolated(anyString(), anyBoolean()))
             .thenAnswer(invocation -> invocation.getArgument(1));
+        // No limit is reached by default, which is also what an unstubbed mock answers.
     }
 
     /**
@@ -597,5 +610,60 @@ class MacroTransformationTest
             this.componentManager.getInstance(BlockRenderer.class, Syntax.EVENT_1_0.toIdString());
         eventBlockRenderer.render(dom, printer);
         return printer.toString();
+    }
+
+    @Test
+    void macroExecutionsLimitStopsTheTransformation() throws Exception
+    {
+        when(this.renderingLimits.isExceeded(RenderingLimitType.MACRO_EXECUTIONS)).thenReturn(true);
+        when(this.renderingLimits.getLimit(RenderingLimitType.MACRO_EXECUTIONS)).thenReturn(42L);
+
+        String expected = """
+            beginDocument
+            beginMacroMarkerStandalone [testsimplemacro] []
+            beginGroup [[class]=[xwikirenderingerror]]
+            onWord [The [testsimplemacro] macro couldn't be executed as the [macro.executions] limit of [42] for rendering a page has been reached. Click on this message for details.]
+            endGroup [[class]=[xwikirenderingerror]]
+            beginGroup [[class]=[xwikirenderingerrordescription hidden]]
+            onVerbatim [The rendering of a page is limited to protect the server against pages that consume too many resources. A wiki administrator can change these limits in xwiki.properties.] [false]
+            endGroup [[class]=[xwikirenderingerrordescription hidden]]
+            endMacroMarkerStandalone [testsimplemacro] []
+            onMacroStandalone [testsimplemacro] []
+            endDocument""";
+
+        XDOM dom = new XDOM(List.of((Block) new MacroBlock("testsimplemacro", Map.of(), false),
+            new MacroBlock("testsimplemacro", Map.of(), false)));
+
+        assertEquals(expected, transformAndRenderEvents(dom));
+    }
+
+    @Test
+    void timeLimitStopsTheTransformation() throws Exception
+    {
+        when(this.renderingLimits.isExceeded(RenderingLimitType.TIME)).thenReturn(true);
+        when(this.renderingLimits.getLimit(RenderingLimitType.TIME)).thenReturn(60_000L);
+
+        XDOM dom = new XDOM(List.of((Block) new MacroBlock("testsimplemacro", Map.of(), false)));
+
+        assertTrue(transformAndRenderEvents(dom).contains("The [testsimplemacro] macro couldn't be executed as the"
+            + " [time] limit of [60000] for rendering a page has been reached."));
+    }
+
+    @Test
+    void errorMessagesLimitStopsGeneratingErrorMessages() throws Exception
+    {
+        when(this.renderingLimits.isExceeded(RenderingLimitType.MACRO_EXECUTIONS)).thenReturn(true);
+        when(this.renderingLimits.isExceeded(RenderingLimitType.ERROR_MESSAGES)).thenReturn(true);
+
+        String expected = """
+            beginDocument
+            onMacroStandalone [testsimplemacro] []
+            endDocument""";
+
+        XDOM dom = new XDOM(List.of((Block) new MacroBlock("testsimplemacro", Map.of(), false)));
+
+        assertEquals(expected, transformAndRenderEvents(dom));
+        assertEquals("Not reporting that the [testsimplemacro] macro couldn't be executed as the maximum number of"
+            + " error messages for a page has been reached.", this.logCapture.getMessage(0));
     }
 }

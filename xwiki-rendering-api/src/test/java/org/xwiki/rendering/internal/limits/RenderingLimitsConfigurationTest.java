@@ -20,12 +20,19 @@
 package org.xwiki.rendering.internal.limits;
 
 import java.util.OptionalInt;
+import java.util.OptionalLong;
 
 import javax.inject.Named;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.xwiki.configuration.ConfigurationSource;
 import org.xwiki.rendering.limits.RecursionType;
+import org.xwiki.rendering.limits.RenderingLimitType;
+import org.xwiki.test.LogLevel;
+import org.xwiki.test.junit5.LogCaptureExtension;
 import org.xwiki.test.junit5.mockito.ComponentTest;
 import org.xwiki.test.junit5.mockito.InjectMockComponents;
 import org.xwiki.test.junit5.mockito.MockComponent;
@@ -46,6 +53,15 @@ class RenderingLimitsConfigurationTest
     private static final RecursionType TYPE = new RecursionType("test", 3, 1);
 
     private static final String PROPERTY = "rendering.recursion.test.limit";
+
+    private static final RenderingLimitType LIMIT_TYPE = new RenderingLimitType("test", 100, 10, "1");
+
+    private static final String LIMIT_PROPERTY = "rendering.limits.test.limit";
+
+    private static final String MODE_PROPERTY = "rendering.limits.mode";
+
+    @RegisterExtension
+    private LogCaptureExtension logCapture = new LogCaptureExtension(LogLevel.WARN);
 
     @MockComponent
     @Named("restricted")
@@ -88,5 +104,70 @@ class RenderingLimitsConfigurationTest
         assertEquals(OptionalInt.of(42), this.configuration.getConfiguredRecursionLimit(TYPE));
         assertEquals(OptionalInt.of(7),
             this.configuration.getConfiguredRecursionLimit(new RecursionType("other", 3, 1)));
+    }
+
+    @Test
+    void getConfiguredLimit()
+    {
+        when(this.configurationSource.getProperty(LIMIT_PROPERTY, Long.class, null)).thenReturn(4200L);
+
+        assertEquals(OptionalLong.of(4200), this.configuration.getConfiguredLimit(LIMIT_TYPE));
+
+        // Verify that the value is cached.
+        assertEquals(OptionalLong.of(4200), this.configuration.getConfiguredLimit(LIMIT_TYPE));
+        verify(this.configurationSource).getProperty(LIMIT_PROPERTY, Long.class, null);
+        verifyNoMoreInteractions(this.configurationSource);
+    }
+
+    @Test
+    void getConfiguredLimitWithoutConfiguration()
+    {
+        assertEquals(OptionalLong.empty(), this.configuration.getConfiguredLimit(LIMIT_TYPE));
+
+        // Verify that the absence of a value is cached, too.
+        assertEquals(OptionalLong.empty(), this.configuration.getConfiguredLimit(LIMIT_TYPE));
+        verify(this.configurationSource).getProperty(LIMIT_PROPERTY, Long.class, null);
+        verifyNoMoreInteractions(this.configurationSource);
+    }
+
+    @Test
+    void getConfiguredLimitForSeveralTypes()
+    {
+        when(this.configurationSource.getProperty(LIMIT_PROPERTY, Long.class, null)).thenReturn(4200L);
+        when(this.configurationSource.getProperty("rendering.limits.other.limit", Long.class, null)).thenReturn(7L);
+
+        assertEquals(OptionalLong.of(4200), this.configuration.getConfiguredLimit(LIMIT_TYPE));
+        assertEquals(OptionalLong.of(7),
+            this.configuration.getConfiguredLimit(new RenderingLimitType("other", 100, 10, "1")));
+    }
+
+    @ParameterizedTest
+    @CsvSource({ "enforce, ENFORCE", "LOG, LOG", " disabled , DISABLED" })
+    void getMode(String value, RenderingLimitsMode expectedMode)
+    {
+        when(this.configurationSource.getProperty(MODE_PROPERTY, String.class, null)).thenReturn(value);
+
+        assertEquals(expectedMode, this.configuration.getMode());
+
+        // Verify that the value is cached.
+        assertEquals(expectedMode, this.configuration.getMode());
+        verify(this.configurationSource).getProperty(MODE_PROPERTY, String.class, null);
+        verifyNoMoreInteractions(this.configurationSource);
+    }
+
+    @Test
+    void getModeWithoutConfiguration()
+    {
+        assertEquals(RenderingLimitsMode.ENFORCE, this.configuration.getMode());
+    }
+
+    @Test
+    void getModeWithUnknownValue()
+    {
+        when(this.configurationSource.getProperty(MODE_PROPERTY, String.class, null)).thenReturn("wrong");
+
+        assertEquals(RenderingLimitsMode.ENFORCE, this.configuration.getMode());
+        assertEquals("Ignoring the unknown rendering limits mode [wrong], using [ENFORCE] instead. Supported modes"
+            + " are [ENFORCE, LOG, DISABLED].", this.logCapture.getMessage(0));
     }
 }
