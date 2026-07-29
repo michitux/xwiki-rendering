@@ -33,6 +33,8 @@ org.xwiki.rendering.internal.renderer.reference.DefaultResourceReferenceTypeSeri
 org.xwiki.rendering.internal.syntax.SyntaxConverter
 org.xwiki.rendering.internal.syntax.DefaultSyntaxRegistry
 org.xwiki.rendering.internal.syntax.SyntaxRegistryListener
+org.xwiki.rendering.internal.limits.RenderingLimitsConfiguration
+org.xwiki.rendering.internal.limits.DefaultRenderingLimits
 org.xwiki.rendering.internal.transformation.DefaultRenderingContext
 org.xwiki.rendering.internal.transformation.DefaultTransformationManager
 org.xwiki.rendering.internal.transformation.RenderingContextStore

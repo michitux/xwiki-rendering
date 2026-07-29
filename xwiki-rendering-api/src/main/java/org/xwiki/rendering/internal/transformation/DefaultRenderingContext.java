@@ -31,6 +31,9 @@ import org.xwiki.context.Execution;
 import org.xwiki.context.ExecutionContext;
 import org.xwiki.rendering.block.Block;
 import org.xwiki.rendering.block.XDOM;
+import org.xwiki.rendering.limits.RecursionLimitExceededException;
+import org.xwiki.rendering.limits.RenderingLimits;
+import org.xwiki.rendering.limits.RenderingLimitsScope;
 import org.xwiki.rendering.syntax.Syntax;
 import org.xwiki.rendering.transformation.Transformation;
 import org.xwiki.rendering.transformation.TransformationContext;
@@ -61,6 +64,12 @@ public class DefaultRenderingContext implements MutableRenderingContext
      */
     @Inject
     private Execution execution;
+
+    /**
+     * Used to limit the depth of recursive transformations.
+     */
+    @Inject
+    private RenderingLimits renderingLimits;
 
     protected static final class Context implements Cloneable
     {
@@ -178,11 +187,20 @@ public class DefaultRenderingContext implements MutableRenderingContext
     public void transformInContext(Transformation transformation, TransformationContext context, Block block)
         throws TransformationException
     {
-        try {
-            push(transformation, context);
-            transformation.transform(block, context);
-        } finally {
-            pop();
+        // Guard against transformations that recursively trigger themselves, which would otherwise end in a stack
+        // overflow. Note that the recursion depth is counted separately from the context stack below as that stack
+        // also gets pushed for reasons that have nothing to do with recursion, e.g. by the RenderingContextStore.
+        try (RenderingLimitsScope level = this.renderingLimits.enterTransformation()) {
+            try {
+                push(transformation, context);
+                transformation.transform(block, context);
+            } finally {
+                pop();
+            }
+        } catch (RecursionLimitExceededException e) {
+            throw new TransformationException(e.getMessage() + " This is likely due to a transformation that triggers"
+                + " itself, e.g., through a macro that triggers a nested macro transformation that calls the same macro"
+                + " again.", e);
         }
     }
 
