@@ -101,11 +101,16 @@ public class DefaultRenderingLimits implements RenderingLimits
         }
 
         /**
-         * @return the total amount charged against the given limit, including this charge
+         * @param cap the value the total may not grow beyond, see {@link DefaultRenderingLimits#charge}
+         * @return the total amount charged against the given limit, including as much of this charge as the cap allows
          */
-        private long charge(String name, long amount)
+        private long charge(String name, long amount, long cap)
         {
-            return this.charged.computeIfAbsent(name, key -> new AtomicLong()).addAndGet(amount);
+            // Never lower the total, which the cap could otherwise do when it is smaller than the total another
+            // execution of the same rendering charged, e.g. because that one had a reserve scope open. The room left
+            // is computed by subtraction so that a huge charge cannot overflow the total.
+            return this.charged.computeIfAbsent(name, key -> new AtomicLong()).accumulateAndGet(amount,
+                (total, delta) -> total >= cap ? total : total + Math.min(delta, cap - total));
         }
 
         private long getCharged(String name)
@@ -308,11 +313,18 @@ public class DefaultRenderingLimits implements RenderingLimits
             return;
         }
 
-        long charged = state.budgets.charge(type.getName(), amount);
         long limit = getLimit(type, state);
+        // The total is capped just above the limit so that the reserve of the type stays available for reporting the
+        // exceeded limit: a single charge can overshoot the limit by far more than the reserve, e.g. when a macro
+        // produced a huge amount of content, and raising the limit by the reserve would then allow nothing at all.
+        // In the logging mode nothing is enforced, so the real amounts are counted there in order to be observed.
+        long cap = getMode(state) == RenderingLimitsMode.LOG ? Long.MAX_VALUE : limit + 1;
+        // Read the total before charging so that the amount that didn't fit is reported instead of the capped one.
+        long attempted = state.budgets.getCharged(type.getName()) + amount;
+        long charged = state.budgets.charge(type.getName(), amount, cap);
 
         if (charged > limit) {
-            reportExceededLimit(type, state, charged, limit);
+            reportExceededLimit(type, state, attempted, limit);
         }
     }
 
@@ -394,6 +406,14 @@ public class DefaultRenderingLimits implements RenderingLimits
     }
 
     @Override
+    public boolean isReserveOpen()
+    {
+        State state = getState(false);
+
+        return state != null && state.reserve > 0;
+    }
+
+    @Override
     public RenderingLimitsScope enterTransformation() throws RecursionLimitExceededException
     {
         // The outermost transformation is what defines "one rendering", so it is what owns the budgets.
@@ -450,13 +470,17 @@ public class DefaultRenderingLimits implements RenderingLimits
         this.logger.debug("There is no execution context to store the rendering limits in, so no limit is enforced.");
     }
 
-    private void reportExceededLimit(RenderingLimitType type, State state, long charged, long limit)
+    /**
+     * @param attempted the total the charge amounted to before it was capped, so that the message tells by how much the
+     *            limit was really exceeded
+     */
+    private void reportExceededLimit(RenderingLimitType type, State state, long attempted, long limit)
     {
         if (state.budgets.shallReportExceeded(type.getName())) {
             this.logger.warn("The [{}] limit for rendering a page has been exceeded while rendering [{}]: [{}]"
                 + " instead of the limit of [{}] (profiles: {}). A wiki administrator can change the limit with the"
                 + " [rendering.limits.{}.limit] property in xwiki.properties.", type.getName(),
-                this.renderingContextProvider.get().getTransformationId(), charged, limit, state.budgets.profiles,
+                this.renderingContextProvider.get().getTransformationId(), attempted, limit, state.budgets.profiles,
                 type.getName());
         }
     }

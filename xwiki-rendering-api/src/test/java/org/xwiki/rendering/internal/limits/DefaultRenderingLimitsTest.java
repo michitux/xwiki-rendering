@@ -307,6 +307,61 @@ class DefaultRenderingLimitsTest
     }
 
     @Test
+    void chargeIsCappedJustAboveTheLimitSoThatTheReserveIsStillAvailable()
+    {
+        // A single charge can overshoot the limit by an arbitrary amount, e.g. when a macro produced a huge amount of
+        // content, but only what is needed to see that the limit is exceeded is counted.
+        this.limits.charge(LIMIT_TYPE, 1000);
+
+        assertEquals(101, this.limits.getCharged(LIMIT_TYPE));
+        assertTrue(this.limits.isExceeded(LIMIT_TYPE));
+
+        try (RenderingLimitsScope reserve = this.limits.enterReserve()) {
+            // Without the cap the overshoot would have consumed the reserve of 10 and reporting the exceeded limit
+            // would immediately hit the limit again.
+            assertFalse(this.limits.isExceeded(LIMIT_TYPE));
+            assertFalse(this.limits.exceeds(LIMIT_TYPE, 9));
+            assertTrue(this.limits.exceeds(LIMIT_TYPE, 10));
+        }
+    }
+
+    @Test
+    void chargeInsideAReserveIsCappedAtTheRaisedLimit()
+    {
+        try (RenderingLimitsScope reserve = this.limits.enterReserve()) {
+            this.limits.charge(LIMIT_TYPE, 1000);
+
+            // The cap follows the limit that applies, i.e. the one raised by the reserve of 10.
+            assertEquals(111, this.limits.getCharged(LIMIT_TYPE));
+            assertTrue(this.limits.isExceeded(LIMIT_TYPE));
+        }
+
+        // What has been charged in the reserve isn't given back, so the reserve is the headroom for all the error
+        // messages of a rendering together and not one per message.
+        assertTrue(this.limits.isExceeded(LIMIT_TYPE));
+        assertEquals(111, this.limits.getCharged(LIMIT_TYPE));
+    }
+
+    @Test
+    void isReserveOpen()
+    {
+        assertFalse(this.limits.isReserveOpen());
+
+        try (RenderingLimitsScope reserve = this.limits.enterReserve()) {
+            assertTrue(this.limits.isReserveOpen());
+
+            try (RenderingLimitsScope nested = this.limits.enterReserve()) {
+                assertTrue(this.limits.isReserveOpen());
+            }
+
+            // The nested scope isn't the one that opened the reserve, so closing it doesn't close the reserve.
+            assertTrue(this.limits.isReserveOpen());
+        }
+
+        assertFalse(this.limits.isReserveOpen());
+    }
+
+    @Test
     void budgetSurvivesExecutionContextInheritance()
     {
         this.limits.charge(LIMIT_TYPE, 40);
@@ -466,6 +521,7 @@ class DefaultRenderingLimitsTest
 
         this.limits.charge(LIMIT_TYPE, 1000);
 
+        // The charge isn't capped in this mode as its whole point is to observe what content really consumes.
         assertEquals(1000, this.limits.getCharged(LIMIT_TYPE));
         assertFalse(this.limits.isExceeded(LIMIT_TYPE));
         assertFalse(this.limits.exceeds(LIMIT_TYPE, 1000));
@@ -553,6 +609,7 @@ class DefaultRenderingLimitsTest
         assertFalse(this.limits.isExceeded(LIMIT_TYPE));
         assertFalse(this.limits.exceeds(LIMIT_TYPE, 1000));
         assertTrue(this.limits.save().isEmpty());
+        assertFalse(this.limits.isReserveOpen());
         this.limits.enterReserve().close();
         this.limits.enterTransformation().close();
     }
@@ -668,6 +725,23 @@ class DefaultRenderingLimitsTest
         assertEquals(1, this.logCapture.size());
         assertEquals("The [test] limit for rendering a page has been exceeded while rendering [xwiki:Space.Page]:"
             + " [101] instead of the limit of [100] (profiles: []). A wiki administrator can change the limit with"
+            + " the [rendering.limits.test.limit] property in xwiki.properties.", this.logCapture.getMessage(0));
+    }
+
+    @Test
+    void theRealAmountIsReportedEvenThoughTheChargeIsCapped()
+    {
+        when(this.renderingContext.getTransformationId()).thenReturn("xwiki:Space.Page");
+
+        this.limits.charge(LIMIT_TYPE, 60);
+        this.limits.charge(LIMIT_TYPE, 1000);
+
+        // The stored total is capped, but the message tells by how much the limit was really exceeded so that an
+        // administrator can tell a limit that is slightly too low from content that is out of control.
+        assertEquals(101, this.limits.getCharged(LIMIT_TYPE));
+        assertEquals(1, this.logCapture.size());
+        assertEquals("The [test] limit for rendering a page has been exceeded while rendering [xwiki:Space.Page]:"
+            + " [1060] instead of the limit of [100] (profiles: []). A wiki administrator can change the limit with"
             + " the [rendering.limits.test.limit] property in xwiki.properties.", this.logCapture.getMessage(0));
     }
 

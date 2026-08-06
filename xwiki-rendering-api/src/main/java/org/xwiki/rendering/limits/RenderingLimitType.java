@@ -43,9 +43,12 @@ public final class RenderingLimitType
     /**
      * The number of macros that may be executed in one rendering. Intentionally high: this is a backstop against
      * content that generates macros without end, not a limit that legitimate content is expected to come close to.
+     * <p>
+     * The reserve accommodates the macros of the error messages of a whole rendering, see {@link #ERROR_MESSAGES} for
+     * how many of them there can be, as the error template of the platform is itself made of a handful of macros.
      */
     public static final RenderingLimitType MACRO_EXECUTIONS =
-        new RenderingLimitType("macro.executions", 100_000, 100, "1");
+        new RenderingLimitType("macro.executions", 100_000, 1_000, "1");
 
     /**
      * The number of asynchronous executions that one rendering may spawn, to bound both the load they put on the
@@ -58,9 +61,14 @@ public final class RenderingLimitType
     /**
      * The size of the content that the macros of one rendering may produce, counted as a rough estimate that also
      * counts content several times when it passes through several macros, so the limit is set generously.
+     * <p>
+     * The reserve is what all the error messages of one rendering together may add to its result. It is a lot more than
+     * an error message needs because an error message embeds the stack trace of the failure, which amounts to tens of
+     * kilobytes for a deeply nested rendering and is counted again for every macro of the error template it passes
+     * through.
      */
     public static final RenderingLimitType DOCUMENT_SIZE =
-        new RenderingLimitType("document.size", 10L * 1024 * 1024, 64L * 1024, "By");
+        new RenderingLimitType("document.size", 10L * 1024 * 1024, 512L * 1024, "By");
 
     /**
      * The time that one rendering may take, checked between two macro executions, so a single macro that never

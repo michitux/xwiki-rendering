@@ -54,6 +54,13 @@ import org.xwiki.rendering.util.ErrorBlockGenerator;
 @Singleton
 public class DefaultErrorBlockGenerator implements ErrorBlockGenerator
 {
+    /**
+     * How much of the message of the root cause is displayed in the error message itself. Exception messages can be
+     * arbitrarily long, e.g. because they contain the content that couldn't be parsed, and the full message is still
+     * available in the stack trace in the details of the error message.
+     */
+    private static final int MAX_CAUSE_LENGTH = 500;
+
     @Inject
     protected Logger logger;
 
@@ -137,7 +144,7 @@ public class DefaultErrorBlockGenerator implements ErrorBlockGenerator
 
             // Also add more details to the message
             messageBuilder.append(" Cause: [");
-            messageBuilder.append(rootCause.getMessage());
+            messageBuilder.append(StringUtils.abbreviate(rootCause.getMessage(), MAX_CAUSE_LENGTH));
             messageBuilder.append("].");
         }
     }

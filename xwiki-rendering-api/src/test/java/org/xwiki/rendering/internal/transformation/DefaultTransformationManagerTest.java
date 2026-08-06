@@ -42,9 +42,8 @@ import org.xwiki.test.junit5.mockito.InjectMockComponents;
 import org.xwiki.test.junit5.mockito.MockComponent;
 import org.xwiki.test.mockito.MockitoComponentManager;
 
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.matchesPattern;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
@@ -123,17 +122,15 @@ class DefaultTransformationManagerTest
                 new TransformationContext(XDOM.EMPTY, Syntax.XWIKI_2_0));
         });
 
-        String expected = """
-            \\QThe following transformations failed to execute properly: [\\E
-            \\Q- Transformation: \
-            [org.xwiki.rendering.internal.transformation.DefaultTransformationManagerTest$Transformation2]\\E
-            \\Qorg.xwiki.rendering.transformation.TransformationException: error\\E
-            (.*\\n)+\
-            \\Q- Transformation: \
-            [org.xwiki.rendering.internal.transformation.DefaultTransformationManagerTest$Transformation1]\\E
-            \\Qorg.xwiki.rendering.transformation.TransformationException: error\\E
-            (.*\\n)+]\
-            """;
-        assertThat(exception.getMessage(), matchesPattern(expected));
+        // The message only names the transformations that failed: it is displayed in the place of the content whose
+        // transformation failed, where a stack trace would be both unreadable and, with nested transformations,
+        // repeated by every level. The failures are chained instead.
+        assertEquals("The following transformations failed to execute properly:"
+            + " [org.xwiki.rendering.internal.transformation.DefaultTransformationManagerTest$Transformation1,"
+            + " org.xwiki.rendering.internal.transformation.DefaultTransformationManagerTest$Transformation2]",
+            exception.getMessage());
+        assertEquals("error", exception.getCause().getMessage());
+        assertEquals(1, exception.getSuppressed().length);
+        assertEquals("error", exception.getSuppressed()[0].getMessage());
     }
 }

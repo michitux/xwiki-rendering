@@ -86,8 +86,11 @@ public interface RenderingLimits
     /**
      * Charge an amount against the budget of the given type.
      * <p>
-     * The amount is charged whether or not it fits, as a budget is only ever supposed to grow. Use
-     * {@link #isExceeded(RenderingLimitType)} afterwards to know if the resource may still be consumed.
+     * The amount is charged whether or not it fits, as a budget is only ever supposed to grow, but the total is capped
+     * just above the limit: a single charge can overshoot the limit by an arbitrary amount, and without the cap the
+     * reserve of {@link #enterReserve()} would be consumed by that overshoot instead of being available for reporting
+     * the exceeded limit. The real amount is reported in the log instead. Use {@link #isExceeded(RenderingLimitType)}
+     * afterwards to know if the resource may still be consumed.
      *
      * @param type the type of limit to charge against
      * @param amount the amount to charge, in the unit of the type
@@ -127,7 +130,8 @@ public interface RenderingLimits
 
     /**
      * @param type the type of limit
-     * @return the amount that has been charged against the budget of that type so far
+     * @return the amount that has been charged against the budget of that type so far, capped just above the limit as
+     *         described in {@link #charge(RenderingLimitType, long)}
      */
     long getCharged(RenderingLimitType type);
 
@@ -145,10 +149,21 @@ public interface RenderingLimits
      * This is meant for reporting an exceeded limit: generating an error message can itself require rendering, which
      * would otherwise immediately hit the very limit that is being reported. It must not be used to run content that
      * an untrusted user can influence beyond such reporting.
+     * <p>
+     * The reserve of a budget is what makes the cap of {@link #charge(RenderingLimitType, long)} necessary: only
+     * because the charged total never grows beyond the limit is the reserve actual headroom. It is the headroom for all
+     * the error messages of one rendering together, not per message, so it bounds how much the error messages of a
+     * rendering may add to its result.
      *
      * @return the entered scope, to be used in a try-with-resources block
      */
     RenderingLimitsScope enterReserve();
+
+    /**
+     * @return {@code true} when a {@link #enterReserve()} scope is currently open, i.e. when the current execution is
+     *         reporting an exceeded limit
+     */
+    boolean isReserveOpen();
 
     /**
      * Enter a transformation, i.e. enter a level of the recursion type that guards against transformations triggering

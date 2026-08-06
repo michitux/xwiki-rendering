@@ -113,7 +113,9 @@ class MacroTransformationTest
         // By default, return whatever the macro specified.
         when(this.isolatedExecutionConfiguration.isExecutionIsolated(anyString(), anyBoolean()))
             .thenAnswer(invocation -> invocation.getArgument(1));
-        // No limit is reached by default, which is also what an unstubbed mock answers.
+        // No limit is reached by default, which is also what an unstubbed mock answers - apart from the limit values
+        // themselves, where the zero of an unstubbed mock would mean that no content fits at all.
+        when(this.renderingLimits.getLimit(any())).thenReturn(Long.MAX_VALUE);
     }
 
     /**
@@ -656,7 +658,23 @@ class MacroTransformationTest
     }
 
     @Test
-    void sizeLimitDropsWhatTheMacroProduced() throws Exception
+    void sizeLimitDropsWhatAMacroProducedWhenItAloneIsTooLarge() throws Exception
+    {
+        // What the macro produces is on its own larger than what a whole page may contain.
+        when(this.renderingLimits.getLimit(RenderingLimitType.DOCUMENT_SIZE)).thenReturn(1L);
+
+        XDOM dom = new XDOM(List.of((Block) new MacroBlock("testsimplemacro", Map.of(), false)));
+
+        String result = transformAndRenderEvents(dom);
+
+        assertTrue(result.contains("The [testsimplemacro] macro couldn't be executed as the [document.size] limit of"
+            + " [1] for rendering a page has been reached."), result);
+        // What the macro produced isn't part of the result.
+        assertFalse(result.contains("simplemacro0"), result);
+    }
+
+    @Test
+    void sizeLimitKeepsWhatAMacroProducedWhenItFitsIntoAWholePage() throws Exception
     {
         // The size limit is only exceeded once what the macro produced has been charged.
         MutableBoolean exceeded = new MutableBoolean();
@@ -668,14 +686,17 @@ class MacroTransformationTest
             .thenAnswer(invocation -> exceeded.getValue());
         when(this.renderingLimits.getLimit(RenderingLimitType.DOCUMENT_SIZE)).thenReturn(1024L);
 
-        XDOM dom = new XDOM(List.of((Block) new MacroBlock("testsimplemacro", Map.of(), false)));
+        XDOM dom = new XDOM(List.of(new MacroBlock("testsimplemacro", Map.of(), false),
+            new MacroBlock("testsimplemacro", Map.of(), false)));
 
         String result = transformAndRenderEvents(dom);
 
+        // The result fits into a whole page, so it is content that has been counted before and dropping it would
+        // remove content from the document that isn't what made it too large.
+        assertTrue(result.contains("onWord [simplemacro0]"), result);
+        // The transformation still stops, so the second macro isn't executed and reports the exhausted budget.
         assertTrue(result.contains("The [testsimplemacro] macro couldn't be executed as the [document.size] limit of"
             + " [1024] for rendering a page has been reached."), result);
-        // What the macro produced isn't part of the result.
-        assertFalse(result.contains("simplemacro0"), result);
     }
 
     @Test
@@ -733,7 +754,8 @@ class MacroTransformationTest
         XDOM dom = new XDOM(List.of((Block) new MacroBlock("testsimplemacro", Map.of(), false)));
 
         assertEquals(expected, transformAndRenderEvents(dom));
-        assertEquals("Not reporting that the [testsimplemacro] macro couldn't be executed as the maximum number of"
-            + " error messages for a page has been reached.", this.logCapture.getMessage(0));
+        // Not logged as a warning: the exhausted budget for the error messages is reported once for the whole
+        // rendering, and a rendering that reached a limit stops many macros, each of which would add a line.
+        assertEquals(0, this.logCapture.size());
     }
 }

@@ -493,10 +493,7 @@ public class MacroTransformation extends AbstractTransformation implements Initi
             if (macroBlock.getParent() != null) {
                 // Charge what the macro produced before inserting it, so that the result of a macro that produces a
                 // huge amount of content is dropped instead of being kept in memory and sent to the client.
-                this.renderingLimits.charge(RenderingLimitType.DOCUMENT_SIZE,
-                    BlockSizeEstimator.estimateSize(newBlocks));
-
-                if (this.renderingLimits.isExceeded(RenderingLimitType.DOCUMENT_SIZE)) {
+                if (!chargeProducedContent(newBlocks)) {
                     generateLimitError(macroBlock, RenderingLimitType.DOCUMENT_SIZE);
 
                     return;
@@ -524,6 +521,34 @@ public class MacroTransformation extends AbstractTransformation implements Initi
                 ++recursions;
             }
         }
+    }
+
+    /**
+     * Charge the content a macro produced against the size budget of the rendering.
+     *
+     * @param newBlocks the blocks the macro produced
+     * @return {@code true} when the blocks may be inserted into the document, {@code false} when this macro alone
+     *         produced more than a whole page may contain, in which case its result is dropped
+     */
+    private boolean chargeProducedContent(List<Block> newBlocks)
+    {
+        // When the budget is already exhausted before this result is charged, it has been exhausted by what the macro
+        // triggered while it was executing, so the result mostly consists of content that has been counted and
+        // reported already. Dropping it would then remove content from the document that isn't what made it too
+        // large - in the worst case all of it, as the result of a macro that wraps the content of a whole page, like
+        // the [velocity] macro of a sheet or of a template, contains that whole content.
+        boolean exhaustedBefore = this.renderingLimits.isExceeded(RenderingLimitType.DOCUMENT_SIZE);
+
+        long size = BlockSizeEstimator.estimateSize(newBlocks);
+
+        this.renderingLimits.charge(RenderingLimitType.DOCUMENT_SIZE, size);
+
+        // A result that fits into a whole page isn't what makes the document too large either, and dropping it would
+        // also drop the messages that explain why the rendering stopped. Note that this keeps what a macro of an error
+        // message produced, too, as the limit is raised by the reserve while such a message is generated. Only a macro
+        // that produced more than a whole page on its own loses its result. The transformation stops either way, with
+        // the next call of chargeExecution().
+        return exhaustedBefore || size <= this.renderingLimits.getLimit(RenderingLimitType.DOCUMENT_SIZE);
     }
 
     /**
@@ -560,6 +585,20 @@ public class MacroTransformation extends AbstractTransformation implements Initi
 
     private void generateLimitError(MacroBlock macroBlock, RenderingLimitType type)
     {
+        // A macro that is executed while an error message is being generated belongs to that message, so reporting the
+        // limit in its place would replace the message about the macro that actually exhausted the limit with one about
+        // a macro of the error template, e.g. the [velocity] macro that the error template is made of.
+        // Logged at the debug level as the exhausted limit itself is already reported once for the whole rendering:
+        // every macro that isn't executed anymore would otherwise add a line, and a rendering that hit a limit usually
+        // stops a lot of them, in every nested and asynchronous execution it spawned.
+        if (this.renderingLimits.isReserveOpen()) {
+            this.logger.debug("Not reporting that the [{}] macro couldn't be executed as the [{}] limit for rendering a"
+                + " page has been reached because an error message is currently being generated.", macroBlock.getId(),
+                type.getName());
+
+            return;
+        }
+
         generateError(macroBlock, TM_LIMITEXCEEDED,
             "The [{}] macro couldn't be executed as the [{}] limit of [{}] for rendering a page has been reached.",
             "The rendering of a page is limited to protect the server against pages that consume too many resources."
@@ -586,7 +625,9 @@ public class MacroTransformation extends AbstractTransformation implements Initi
         this.renderingLimits.charge(RenderingLimitType.ERROR_MESSAGES, 1);
 
         if (this.renderingLimits.isExceeded(RenderingLimitType.ERROR_MESSAGES)) {
-            this.logger.warn("Not reporting that the [{}] macro couldn't be executed as the maximum number of error"
+            // Also at the debug level: once the budget for the error messages is exhausted, which is reported for the
+            // whole rendering, every further error that isn't displayed would add a line.
+            this.logger.debug("Not reporting that the [{}] macro couldn't be executed as the maximum number of error"
                 + " messages for a page has been reached.", macroBlock.getId());
 
             return;

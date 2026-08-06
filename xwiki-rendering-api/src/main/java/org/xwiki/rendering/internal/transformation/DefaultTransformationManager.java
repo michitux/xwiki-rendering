@@ -21,7 +21,7 @@ package org.xwiki.rendering.internal.transformation;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -82,28 +82,47 @@ public class DefaultTransformationManager implements TransformationManager
     @Override
     public void performTransformations(Block block, TransformationContext context) throws TransformationException
     {
-        Map<String, String> transformationsInError = null;
+        Map<String, Exception> transformationsInError = null;
         for (Transformation transformation : getTransformations(context)) {
             try {
                 ((MutableRenderingContext) this.renderingContext).transformInContext(transformation, context, block);
             } catch (Exception e) {
                 // Continue running the other transformations
                 if (transformationsInError == null) {
-                    transformationsInError = new HashMap<>();
+                    transformationsInError = new LinkedHashMap<>();
                 }
-                transformationsInError.put(transformation.getClass().getName(),
-                    ExceptionUtils.getStackTrace(e));
+                transformationsInError.put(transformation.getClass().getName(), e);
             }
         }
         if (transformationsInError != null) {
-            StringBuilder builder = new StringBuilder();
-            for (Map.Entry<String, String> entry : transformationsInError.entrySet()) {
-                builder.append(String.format("- Transformation: [%s]\n", entry.getKey()));
-                builder.append(entry.getValue());
-            }
-            throw new TransformationException(String.format("The following transformations failed to execute "
-                + "properly: [\n%s]", builder.toString()));
+            throw createTransformationException(transformationsInError);
         }
+    }
+
+    /**
+     * Build the exception for the transformations that failed, chaining their failures instead of putting their stack
+     * traces into the message.
+     * <p>
+     * The message ends up in the error message that is displayed in the place of the content whose transformation
+     * failed, and a stack trace in it is both unreadable there and huge: when transformations are nested, e.g. because
+     * a macro transforms its content, every level would repeat the message of the level below it inside its own stack
+     * trace. The failures are chained instead, so that they are still logged and displayed in the details of the error
+     * message, where a stack trace belongs.
+     *
+     * @param transformationsInError the exception of each transformation that failed, by transformation class name
+     * @return the exception to throw, with the first failure as its cause and the other ones suppressed
+     */
+    private TransformationException createTransformationException(Map<String, Exception> transformationsInError)
+    {
+        List<Exception> failures = new ArrayList<>(transformationsInError.values());
+
+        TransformationException exception = new TransformationException(
+            String.format("The following transformations failed to execute properly: %s",
+                transformationsInError.keySet()), failures.get(0));
+
+        failures.stream().skip(1).forEach(exception::addSuppressed);
+
+        return exception;
     }
 
     private List<Transformation> getTransformations(TransformationContext context)

@@ -37,6 +37,8 @@ import org.xwiki.rendering.block.MacroBlock;
 import org.xwiki.rendering.block.XDOM;
 import org.xwiki.rendering.internal.limits.RenderingLimitsConfiguration;
 import org.xwiki.rendering.limits.RenderingLimitType;
+import org.xwiki.rendering.limits.RenderingLimits;
+import org.xwiki.rendering.limits.RenderingLimitsScope;
 import org.xwiki.rendering.renderer.BlockRenderer;
 import org.xwiki.rendering.renderer.printer.DefaultWikiPrinter;
 import org.xwiki.rendering.renderer.printer.WikiPrinter;
@@ -143,6 +145,116 @@ class MacroTransformationLimitsTest
             + " [1] for rendering a page has been reached."), result);
         // What the macro produced is dropped instead of being kept and sent to the client.
         assertFalse(result.contains("onWord [simplemacro"), result);
+    }
+
+    @Test
+    void whatAMacroWhoseExecutionExhaustedTheBudgetProducedIsKept() throws Exception
+    {
+        when(this.limitsConfiguration.getConfiguredLimit(eq(RenderingLimitType.DOCUMENT_SIZE), any()))
+            .thenReturn(OptionalLong.of(TestExhaustingMacro.CHARGED_SIZE / 2));
+
+        XDOM dom = new XDOM(List.of(new MacroBlock("testexhaustingmacro", Map.of(), false),
+            new MacroBlock("testsimplemacro", Map.of(), false)));
+
+        String result = transformAndRenderEvents(dom);
+
+        // The macro isn't what produced the content that is too large, it only wraps content that has been counted and
+        // reported already, like the [velocity] macro of a sheet whose result contains a whole page. Dropping its
+        // result would remove that content from the document, which for such a macro means losing everything.
+        assertTrue(result.contains("onWord [exhaustingmacro"), result);
+        // The transformation still stops, so the next macro isn't executed and reports the exhausted budget.
+        assertFalse(result.contains("onWord [simplemacro"), result);
+        assertTrue(result.contains("The [testsimplemacro] macro couldn't be executed as the [document.size] limit of"
+            + " [5000] for rendering a page has been reached."), result);
+    }
+
+    @Test
+    void whatAMacroWhoseResultExhaustedTheBudgetProducedIsKept() throws Exception
+    {
+        // The budget is exactly used up by what the macro charges while executing, so it is the result of the macro
+        // that exhausts it.
+        when(this.limitsConfiguration.getConfiguredLimit(eq(RenderingLimitType.DOCUMENT_SIZE), any()))
+            .thenReturn(OptionalLong.of(TestExhaustingMacro.CHARGED_SIZE));
+
+        XDOM dom = new XDOM(List.of(new MacroBlock("testexhaustingmacro", Map.of(), false),
+            new MacroBlock("testsimplemacro", Map.of(), false)));
+
+        String result = transformAndRenderEvents(dom);
+
+        // The result is far smaller than what a whole page may contain, so it isn't what makes the document too large.
+        assertTrue(result.contains("onWord [exhaustingmacro"), result);
+        assertFalse(result.contains("onWord [simplemacro"), result);
+        assertTrue(result.contains("The [testsimplemacro] macro couldn't be executed as the [document.size] limit of"
+            + " [10000] for rendering a page has been reached."), result);
+    }
+
+    @Test
+    void whatAMacroWhoseExecutionExhaustedTheBudgetProducedIsKeptEvenWhenItIsLargerThanTheLimit() throws Exception
+    {
+        // The budget is exhausted many times over by what the macro triggers while executing, so its result is larger
+        // than the limit even though the macro produced almost nothing itself. This is the shape of a [velocity] macro
+        // of a sheet that displays a huge page: its result contains that whole page.
+        when(this.limitsConfiguration.getConfiguredLimit(eq(RenderingLimitType.DOCUMENT_SIZE), any()))
+            .thenReturn(OptionalLong.of(1));
+
+        XDOM dom = new XDOM(List.of((Block) new MacroBlock("testexhaustingmacro", Map.of(), false)));
+
+        String result = transformAndRenderEvents(dom);
+
+        assertTrue(result.contains("onWord [exhaustingmacro"), result);
+    }
+
+    @Test
+    void whatAMacroOfAnErrorMessageProducedIsKept() throws Exception
+    {
+        when(this.limitsConfiguration.getConfiguredLimit(eq(RenderingLimitType.DOCUMENT_SIZE), any()))
+            .thenReturn(OptionalLong.of(1));
+
+        XDOM dom = new XDOM(List.of((Block) new MacroBlock("testsimplemacro", Map.of(), false)));
+
+        String result;
+        RenderingLimits limits = this.componentManager.getInstance(RenderingLimits.class);
+
+        // Simulate the rendering of an error message that has almost used up the reserve, so that the macro executed
+        // here is the one whose result doesn't fit anymore.
+        try (RenderingLimitsScope reserve = limits.enterReserve()) {
+            limits.charge(RenderingLimitType.DOCUMENT_SIZE, RenderingLimitType.DOCUMENT_SIZE.getReserve());
+
+            result = transformAndRenderEvents(dom);
+        }
+
+        // Dropping the content would drop the error message itself, so it is kept even though it doesn't fit.
+        assertTrue(result.contains("onWord [simplemacro"), result);
+        assertFalse(result.contains("xwikirenderingerror"), result);
+    }
+
+    @Test
+    void noLimitIsReportedInThePlaceOfAMacroOfAnErrorMessage() throws Exception
+    {
+        when(this.limitsConfiguration.getConfiguredLimit(eq(RenderingLimitType.DOCUMENT_SIZE), any()))
+            .thenReturn(OptionalLong.of(1));
+
+        XDOM dom = new XDOM(List.of((Block) new MacroBlock("testsimplemacro", Map.of(), false)));
+
+        String result;
+        RenderingLimits limits = this.componentManager.getInstance(RenderingLimits.class);
+
+        // Simulate the rendering of an error message that used up the reserve, e.g. because it embeds a huge stack
+        // trace, so that not even the first macro of the message can be executed.
+        try (RenderingLimitsScope reserve = limits.enterReserve()) {
+            limits.charge(RenderingLimitType.DOCUMENT_SIZE, RenderingLimitType.DOCUMENT_SIZE.getReserve() + 5);
+
+            result = transformAndRenderEvents(dom);
+        }
+
+        // Reporting the limit here would replace the message about the macro that actually exhausted the limit with a
+        // message about a macro of the error template.
+        assertFalse(result.contains("xwikirenderingerror"), result);
+        // No warning is logged for it either: a rendering that reached a limit stops a lot of macros, in every nested
+        // and asynchronous execution it spawned, so only the exhausted limit itself is reported, once.
+        assertEquals(1, this.logCapture.size());
+        assertTrue(this.logCapture.getMessage(0).contains("[document.size] limit for rendering a page has been"
+            + " exceeded"), this.logCapture.getMessage(0));
     }
 
     private String transformAndRenderEvents(XDOM dom) throws Exception

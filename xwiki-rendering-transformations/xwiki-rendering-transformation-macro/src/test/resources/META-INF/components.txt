@@ -11,3 +11,4 @@ org.xwiki.rendering.internal.transformation.macro.TestReplaceMeMacro
 org.xwiki.rendering.internal.transformation.macro.TestReplacementMacro
 org.xwiki.rendering.internal.transformation.macro.TestSyntaxWikiMacro
 org.xwiki.rendering.internal.transformation.macro.TestTwoNestedMacros
+org.xwiki.rendering.internal.transformation.macro.TestExhaustingMacro
