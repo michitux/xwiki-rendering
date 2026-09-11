@@ -79,7 +79,7 @@ public class XWikiSyntaxResourceRenderer
      */
     private static String printParameter(String name, String value)
     {
-        return XWikiSyntaxEscapeHandler.escapeCurlyBrackets(PARAMETERS_PRINTER.print(name, value, '~'));
+        return XWikiSyntaxEscapeHandler.escapeCurlyBrackets(PARAMETERS_PRINTER.print(name, value));
     }
 
     @Override
@@ -129,7 +129,7 @@ public class XWikiSyntaxResourceRenderer
             } else {
                 printer.print(" ");
             }
-            printer.print(XWikiSyntaxEscapeHandler.escapeCurlyBrackets(PARAMETERS_PRINTER.print(parameters, '~')));
+            printer.print(XWikiSyntaxEscapeHandler.escapeCurlyBrackets(PARAMETERS_PRINTER.print(parameters)));
         }
     }
 }
