@@ -528,8 +528,9 @@ public class XWikiSyntaxChainingRenderer extends AbstractChainingPrintRenderer i
     @Override
     public void onId(String name)
     {
-        // Use the macro printer so that the name is escaped like any other macro parameter value.
-        print(getMacroPrinter().renderMacro("id", Map.of("name", name), null, true));
+        // Use the macro printer so that the name is escaped like any other macro parameter value, and the inline
+        // macro printing so that a "{" printed just before isn't parsed as the start of a verbatim block.
+        printInlineMacro(getMacroPrinter().renderMacro("id", Map.of("name", name), null, true));
     }
 
     @Override
@@ -949,6 +950,16 @@ public class XWikiSyntaxChainingRenderer extends AbstractChainingPrintRenderer i
 
             print(buffer.toString());
         }
+    }
+
+    private void printInlineMacro(String xwikiSyntaxText)
+    {
+        this.isFirstElementRendered = true;
+
+        // Handle empty formatting parameters.
+        handleEmptyParameters();
+
+        getXWikiPrinter().printInlineMacro(xwikiSyntaxText);
     }
 
     private void printDelayed(String text)
